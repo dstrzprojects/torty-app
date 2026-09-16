@@ -5,3 +5,4 @@ __pycache__/
 *.bak
 *.mdf
 *.ldf
+*.code-workspace
