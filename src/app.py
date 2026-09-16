@@ -18,7 +18,7 @@ with st.form("ingredient_form", clear_on_submit=True):
         min_value=0.01,
         step=1.0,
     )
-    unit = st.selectbox("Jednostka", ["g", "ml", "szt."])
+    unit = st.selectbox("Jednostka", ["g", "ml", "szt"])
     package_price = st.number_input(
         "Cena opakowania [zł]",
         min_value=0.01,
@@ -60,6 +60,8 @@ if submitted:
                 connection.commit()
                 st.success("Składnik został dodany.")
 
+
+
 st.header("Lista składników")
 
 with get_connection() as connection:
@@ -80,6 +82,100 @@ with get_connection() as connection:
         dict(zip(columns, row))
         for row in cursor.fetchall()
     ]
+
+st.header("Edytuj składnik")
+
+if ingredients:
+    ingredient_by_id = {
+        ingredient["ingredient_id"]: ingredient
+        for ingredient in ingredients
+    }
+
+    selected_id = st.selectbox(
+        "Wybierz składnik",
+        options=list(ingredient_by_id),
+        format_func=lambda ingredient_id: ingredient_by_id[ingredient_id]["name"],
+    )
+
+    selected = ingredient_by_id[selected_id]
+
+    available_units = ["g", "ml", "szt"]
+
+    if selected["unit"] not in available_units:
+        available_units.append(selected["unit"])
+
+    with st.form("edit_ingredient_form"):
+        edited_name = st.text_input(
+            "Nazwa",
+            value=selected["name"],
+        )
+        edited_quantity = st.number_input(
+            "Ilość w opakowaniu",
+            min_value=0.01,
+            value=float(selected["package_quantity"]),
+            step=1.0,
+        )
+        edited_unit = st.selectbox(
+            "Jednostka",
+            available_units,
+            index=available_units.index(selected["unit"]),
+        )
+        edited_price = st.number_input(
+            "Cena opakowania [zł]",
+            min_value=0.01,
+            value=float(selected["package_price"]),
+            step=0.10,
+            format="%.2f",
+        )
+
+        update_submitted = st.form_submit_button("Zapisz zmiany")
+
+    if update_submitted:
+        clean_name = edited_name.strip()
+
+        if not clean_name:
+            st.error("Nazwa składnika nie może być pusta.")
+        else:
+            with get_connection() as connection:
+                cursor = connection.cursor()
+
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM Ingredients
+                    WHERE name = ?
+                      AND ingredient_id <> ?;
+                    """,
+                    clean_name,
+                    selected_id,
+                )
+
+                name_taken = cursor.fetchone()[0] > 0
+
+                if name_taken:
+                    st.warning("Inny składnik ma już taką nazwę.")
+                else:
+                    cursor.execute(
+                        """
+                        UPDATE Ingredients
+                        SET
+                            name = ?,
+                            package_quantity = ?,
+                            unit = ?,
+                            package_price = ?,
+                            updated_at = SYSDATETIME()
+                        WHERE ingredient_id = ?;
+                        """,
+                        clean_name,
+                        edited_quantity,
+                        edited_unit,
+                        edited_price,
+                        selected_id,
+                    )
+                    connection.commit()
+
+                    st.success("Zmiany zostały zapisane.")
+                    st.rerun()
 
 st.dataframe(
     ingredients,
