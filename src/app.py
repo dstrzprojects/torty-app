@@ -62,7 +62,7 @@ if submitted:
 
 
 
-st.header("Lista składników")
+
 
 with get_connection() as connection:
     cursor = connection.cursor()
@@ -176,6 +176,8 @@ if ingredients:
 
                     st.success("Zmiany zostały zapisane.")
                     st.rerun()
+
+st.header("Lista składników")
 
 st.dataframe(
     ingredients,
