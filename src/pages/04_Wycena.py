@@ -1,39 +1,18 @@
 import streamlit as st
 
-from db import get_connection
+from pricing import (
+    calculate_scaled_ingredients,
+    get_recipes,
+)
 
 st.title("Wycena")
-
-
-def fetch_rows(query, parameters=()):
-    with get_connection() as connection:
-        cursor = connection.cursor()
-        cursor.execute(query, parameters)
-
-        columns = [
-            column[0]
-            for column in cursor.description
-        ]
-
-        return [
-            dict(zip(columns, row))
-            for row in cursor.fetchall()
-        ]
 
 
 # =========================================================
 # POBIERANIE PRZEPISÓW
 # =========================================================
 
-recipes = fetch_rows("""
-    SELECT
-        recipe_id,
-        name,
-        base_diameter_cm,
-        base_height_cm
-    FROM Recipes
-    ORDER BY name;
-""")
+recipes = get_recipes()
 
 if not recipes:
     st.info("Najpierw utwórz przepis.")
@@ -99,84 +78,36 @@ with st.expander("Wycena tortu", expanded=True):
         key=f"valuation_correction_{selected_recipe_id}",
     )
 
-    scale_factor = (
-        (target_diameter / base_diameter) ** 2
-        * (target_height / base_height)
-        * (1 + correction_percent / 100)
-    )
 
+# =========================================================
+# WSPÓLNE OBLICZENIE SKŁADNIKÓW
+# =========================================================
+
+pricing_result = calculate_scaled_ingredients(
+    recipe_id=selected_recipe_id,
+    target_diameter=target_diameter,
+    target_height=target_height,
+    correction_percent=correction_percent,
+)
+
+scale_factor = pricing_result["scale_factor"]
+ingredient_rows = pricing_result["ingredients"]
+ingredients_cost = pricing_result["ingredients_cost"]
+
+missing_price_ingredients = pricing_result[
+    "missing_price_ingredients"
+]
+
+with st.expander("Współczynnik skalowania", expanded=False):
     st.metric(
-        "Współczynnik skalowania",
+        "Współczynnik",
         f"{scale_factor:.3f}×",
     )
 
-
-# =========================================================
-# SKALOWANE SKŁADNIKI I ICH KOSZTY
-# =========================================================
-
-ingredient_rows = fetch_rows(
-    """
-    SELECT
-        i.name AS ingredient,
-        i.unit,
-
-        CASE
-            WHEN i.unit IN (N'szt', N'szt.')
-            THEN CEILING(ri.quantity * ?)
-            ELSE ROUND(ri.quantity * ?, 0)
-        END AS scaled_quantity,
-
-        CASE
-            WHEN i.package_quantity IS NULL
-              OR i.package_price IS NULL
-            THEN NULL
-
-            ELSE ROUND(
-                (
-                    CASE
-                        WHEN i.unit IN (N'szt', N'szt.')
-                        THEN CEILING(ri.quantity * ?)
-                        ELSE ROUND(ri.quantity * ?, 0)
-                    END
-                )
-                / NULLIF(i.package_quantity, 0)
-                * i.package_price,
-                2
-            )
-        END AS ingredient_cost
-
-    FROM RecipeIngredients AS ri
-
-    JOIN Ingredients AS i
-        ON i.ingredient_id = ri.ingredient_id
-
-    WHERE ri.recipe_id = ?
-
-    ORDER BY i.name;
-    """,
-    (
-        scale_factor,
-        scale_factor,
-        scale_factor,
-        scale_factor,
-        selected_recipe_id,
-    ),
-)
-
-known_ingredient_costs = [
-    float(row["ingredient_cost"])
-    for row in ingredient_rows
-    if row["ingredient_cost"] is not None
-]
-
-missing_price_ingredients = [
-    row["ingredient"]
-    for row in ingredient_rows
-    if row["ingredient_cost"] is None
-]
-
-ingredients_cost = sum(known_ingredient_costs)
+    st.caption(
+        "Współczynnik jest stosowany do ilości składników. "
+        "Koszt jest następnie liczony od przeskalowanej ilości."
+    )
 
 
 # =========================================================
@@ -261,22 +192,35 @@ with st.expander("Cena sprzedaży", expanded=True):
         )
 
     markup_percent = st.number_input(
-        "Narzut [%]",
+        "Sugerowany narzut [%]",
         min_value=0.0,
         value=0.0,
         step=5.0,
     )
 
-    selling_price = total_cost * (
+    suggested_price = total_cost * (
         1 + markup_percent / 100
     )
 
-    additional_profit = selling_price - total_cost
-
-    total_earnings = (
-        work_cost
-        + additional_profit
+    st.metric(
+        "Cena wynikająca z wyceny",
+        f"{suggested_price:.2f} zł",
     )
+
+    selling_price = st.number_input(
+        "Rzeczywista cena sprzedaży [zł]",
+        min_value=0.0,
+        value=float(round(suggested_price, 2)),
+        step=10.0,
+        format="%.2f",
+        help=(
+            "Możesz wpisać cenę uzgodnioną z klientem. "
+            "Nie musi być równa wycenie."
+        ),
+    )
+
+    additional_profit = selling_price - total_cost
+    total_earnings = work_cost + additional_profit
 
     summary_col1, summary_col2 = st.columns(2)
     summary_col3, summary_col4 = st.columns(2)
@@ -291,19 +235,30 @@ with st.expander("Cena sprzedaży", expanded=True):
         f"{cost_without_work:.2f} zł",
     )
 
-
-    st.metric(
-        "Cena sprzedaży",
-        f"{selling_price:.2f} zł",
-    )
     summary_col3.metric(
         "Wynagrodzenie za pracę",
         f"{work_cost:.2f} zł",
     )
+
     summary_col4.metric(
+        "Cena sprzedaży",
+        f"{selling_price:.2f} zł",
+        delta=(
+            f"{selling_price - suggested_price:+.2f} zł "
+            "względem wyceny"
+        ),
+    )
+
+    st.metric(
         "Łącznie dla Ciebie",
         f"{total_earnings:.2f} zł",
     )
+
+    if selling_price < total_cost:
+        st.warning(
+            "Cena sprzedaży jest niższa od pełnego "
+            "kosztu wykonania tortu."
+        )
 
 
 # =========================================================
@@ -370,10 +325,18 @@ with st.expander("Skalowane składniki", expanded=True):
             ingredient_rows,
             use_container_width=True,
             hide_index=True,
+            column_order=(
+                "ingredient",
+                "base_quantity",
+                "scaled_quantity",
+                "unit",
+                "ingredient_cost",
+            ),
             column_config={
                 "ingredient": "Składnik",
-                "unit": "Jednostka",
+                "base_quantity": "Ilość bazowa",
                 "scaled_quantity": "Ilość",
+                "unit": "Jednostka",
                 "ingredient_cost": (
                     st.column_config.NumberColumn(
                         "Koszt",

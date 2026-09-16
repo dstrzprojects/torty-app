@@ -277,70 +277,7 @@ with st.expander(
     expanded=False,
 ):
 
-    st.subheader("Nie ma składnika na liście?")
-
-    with st.form("quick_ingredient_form", clear_on_submit=True):
-        new_ingredient_name = st.text_input(
-            "Nazwa nowego składnika"
-        )
-
-        new_ingredient_unit = st.selectbox(
-            "Jednostka nowego składnika",
-            ["g", "ml", "szt"],
-        )
-
-        create_ingredient = st.form_submit_button(
-            "Dodaj składnik do ogólnej bazy"
-        )
-
-    if create_ingredient:
-        clean_ingredient_name = new_ingredient_name.strip()
-
-        if not clean_ingredient_name:
-            st.error("Podaj nazwę składnika.")
-        else:
-            with get_connection() as connection:
-                cursor = connection.cursor()
-
-                cursor.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM Ingredients
-                    WHERE name = ?;
-                    """,
-                    clean_ingredient_name,
-                )
-
-                ingredient_exists = cursor.fetchone()[0] > 0
-
-                if ingredient_exists:
-                    st.warning(
-                        "Składnik o takiej nazwie już istnieje."
-                    )
-                else:
-                    cursor.execute(
-                        """
-                        INSERT INTO Ingredients (
-                            name,
-                            package_quantity,
-                            unit,
-                            package_price
-                        )
-                        VALUES (?, NULL, ?, NULL);
-                        """,
-                        clean_ingredient_name,
-                        new_ingredient_unit,
-                    )
-
-                    connection.commit()
-
-                    st.success(
-                        "Składnik został dodany do ogólnej bazy "
-                        "bez danych o cenie."
-                    )
-                    st.rerun()
-
-
+    
     st.subheader("Przypisz składnik do przepisu")
 
     if not recipes:
@@ -431,7 +368,187 @@ with st.expander(
                         "Składnik został dodany do przepisu."
                     )
                     st.rerun()
+    
+    st.subheader("Nie ma składnika na liście?")
 
+    with st.form("quick_ingredient_form", clear_on_submit=True):
+        new_ingredient_name = st.text_input(
+            "Nazwa nowego składnika"
+        )
+
+        new_ingredient_unit = st.selectbox(
+            "Jednostka nowego składnika",
+            ["g", "ml", "szt"],
+        )
+
+        create_ingredient = st.form_submit_button(
+            "Dodaj składnik do ogólnej bazy"
+        )
+
+    if create_ingredient:
+        clean_ingredient_name = new_ingredient_name.strip()
+
+        if not clean_ingredient_name:
+            st.error("Podaj nazwę składnika.")
+        else:
+            with get_connection() as connection:
+                cursor = connection.cursor()
+
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM Ingredients
+                    WHERE name = ?;
+                    """,
+                    clean_ingredient_name,
+                )
+
+                ingredient_exists = cursor.fetchone()[0] > 0
+
+                if ingredient_exists:
+                    st.warning(
+                        "Składnik o takiej nazwie już istnieje."
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO Ingredients (
+                            name,
+                            package_quantity,
+                            unit,
+                            package_price
+                        )
+                        VALUES (?, NULL, ?, NULL);
+                        """,
+                        clean_ingredient_name,
+                        new_ingredient_unit,
+                    )
+
+                    connection.commit()
+
+                    st.success(
+                        "Składnik został dodany do ogólnej bazy "
+                        "bez danych o cenie."
+                    )
+                    st.rerun()
+
+# =========================================================
+# EDYCJA SKŁADNIKÓW PRZEPISU
+# =========================================================
+
+with st.expander(
+    "Edytuj składniki przepisu",
+    expanded=False,
+):
+    if not recipes:
+        st.info("Nie ma jeszcze żadnych przepisów.")
+
+    else:
+        edit_ingredient_recipe_id = st.selectbox(
+            "Przepis",
+            options=list(recipe_by_id),
+            format_func=lambda recipe_id: (
+                recipe_by_id[recipe_id]["name"]
+            ),
+            key="edit_recipe_ingredient_recipe",
+        )
+
+        editable_ingredients = fetch_rows(
+            """
+            SELECT
+                i.ingredient_id,
+                i.name AS ingredient,
+                ri.quantity,
+                i.unit
+            FROM RecipeIngredients AS ri
+
+            JOIN Ingredients AS i
+                ON i.ingredient_id = ri.ingredient_id
+
+            WHERE ri.recipe_id = ?
+
+            ORDER BY i.name;
+            """,
+            (edit_ingredient_recipe_id,),
+        )
+
+        if not editable_ingredients:
+            st.info(
+                "Wybrany przepis nie ma jeszcze składników."
+            )
+
+        else:
+            editable_by_id = {
+                row["ingredient_id"]: row
+                for row in editable_ingredients
+            }
+
+            edited_ingredient_id = st.selectbox(
+                "Składnik",
+                options=list(editable_by_id),
+                format_func=lambda ingredient_id: (
+                    editable_by_id[ingredient_id][
+                        "ingredient"
+                    ]
+                ),
+                key="edit_recipe_ingredient",
+            )
+
+            edited_ingredient = editable_by_id[
+                edited_ingredient_id
+            ]
+
+            edited_unit = edited_ingredient["unit"]
+
+            with st.form(
+                "edit_recipe_ingredient_form"
+            ):
+                edited_quantity = st.number_input(
+                    f"Ilość [{edited_unit}]",
+                    min_value=0.01,
+                    value=float(
+                        edited_ingredient["quantity"]
+                    ),
+                    step=(
+                        1.0
+                        if edited_unit in ("szt", "szt.")
+                        else 1.0
+                    ),
+                    key=(
+                        f"edit_quantity_"
+                        f"{edit_ingredient_recipe_id}_"
+                        f"{edited_ingredient_id}"
+                    ),
+                )
+
+                update_quantity = (
+                    st.form_submit_button(
+                        "Zapisz ilość"
+                    )
+                )
+
+            if update_quantity:
+                with get_connection() as connection:
+                    cursor = connection.cursor()
+
+                    cursor.execute(
+                        """
+                        UPDATE RecipeIngredients
+                        SET quantity = ?
+                        WHERE recipe_id = ?
+                          AND ingredient_id = ?;
+                        """,
+                        edited_quantity,
+                        edit_ingredient_recipe_id,
+                        edited_ingredient_id,
+                    )
+
+                    connection.commit()
+
+                st.success(
+                    "Ilość składnika została zmieniona."
+                )
+                st.rerun()
 
 # =========================================================
 # LISTA SKŁADNIKÓW WYBRANEGO PRZEPISU
