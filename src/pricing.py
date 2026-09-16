@@ -2,7 +2,6 @@ from db import get_connection
 
 
 def fetch_rows(query, parameters=()):
-    """Wykonuje SELECT i zwraca listę słowników."""
     with get_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(query, parameters)
@@ -19,7 +18,6 @@ def fetch_rows(query, parameters=()):
 
 
 def fetch_one(query, parameters=()):
-    """Wykonuje SELECT i zwraca jeden wiersz jako słownik."""
     with get_connection() as connection:
         cursor = connection.cursor()
         cursor.execute(query, parameters)
@@ -38,7 +36,6 @@ def fetch_one(query, parameters=()):
 
 
 def get_recipes():
-    """Pobiera przepisy dostępne do wyceny."""
     return fetch_rows("""
         SELECT
             recipe_id,
@@ -56,17 +53,6 @@ def calculate_scaled_ingredients(
     target_height,
     correction_percent=0,
 ):
-    """
-    Skaluje ilości składników i wylicza ich koszty.
-
-    Zwraca słownik zawierający:
-    - recipe,
-    - scale_factor,
-    - ingredients,
-    - ingredients_cost,
-    - missing_price_ingredients.
-    """
-
     recipe = fetch_one(
         """
         SELECT
@@ -83,8 +69,12 @@ def calculate_scaled_ingredients(
     if recipe is None:
         raise ValueError("Wybrany przepis nie istnieje.")
 
-    base_diameter = float(recipe["base_diameter_cm"])
-    base_height = float(recipe["base_height_cm"])
+    base_diameter = float(
+        recipe["base_diameter_cm"]
+    )
+    base_height = float(
+        recipe["base_height_cm"]
+    )
 
     target_diameter = float(target_diameter)
     target_height = float(target_height)
@@ -92,12 +82,12 @@ def calculate_scaled_ingredients(
 
     if target_diameter <= 0:
         raise ValueError(
-            "Średnica docelowa musi być większa od zera."
+            "Średnica musi być większa od zera."
         )
 
     if target_height <= 0:
         raise ValueError(
-            "Wysokość docelowa musi być większa od zera."
+            "Wysokość musi być większa od zera."
         )
 
     if correction_percent <= -100:
@@ -113,53 +103,148 @@ def calculate_scaled_ingredients(
 
     ingredients = fetch_rows(
         """
+        WITH RecipeTree AS (
+            SELECT
+                CAST(? AS INT) AS recipe_id,
+
+                CAST(
+                    1.0 AS DECIMAL(18,6)
+                ) AS recipe_factor,
+
+                CAST(
+                    N'/'
+                    + CAST(? AS NVARCHAR(20))
+                    + N'/'
+                    AS NVARCHAR(MAX)
+                ) AS recipe_path
+
+            UNION ALL
+
+            SELECT
+                rc.child_recipe_id,
+
+                CAST(
+                    rt.recipe_factor
+                    * rc.quantity_factor
+                    AS DECIMAL(18,6)
+                ) AS recipe_factor,
+
+                CAST(
+                    rt.recipe_path
+                    + CAST(
+                        rc.child_recipe_id
+                        AS NVARCHAR(20)
+                    )
+                    + N'/'
+                    AS NVARCHAR(MAX)
+                ) AS recipe_path
+
+            FROM RecipeTree AS rt
+
+            JOIN RecipeComponents AS rc
+                ON rc.parent_recipe_id
+                    = rt.recipe_id
+
+            WHERE rt.recipe_path NOT LIKE
+                N'%/'
+                + CAST(
+                    rc.child_recipe_id
+                    AS NVARCHAR(20)
+                )
+                + N'/%'
+        ),
+
+        BaseIngredients AS (
+            SELECT
+                i.ingredient_id,
+                i.name AS ingredient,
+                i.unit,
+                i.package_quantity,
+                i.package_price,
+
+                SUM(
+                    CAST(
+                        ri.quantity
+                        AS DECIMAL(18,6)
+                    )
+                    * rt.recipe_factor
+                ) AS base_quantity
+
+            FROM RecipeTree AS rt
+
+            JOIN RecipeIngredients AS ri
+                ON ri.recipe_id = rt.recipe_id
+
+            JOIN Ingredients AS i
+                ON i.ingredient_id
+                    = ri.ingredient_id
+
+            GROUP BY
+                i.ingredient_id,
+                i.name,
+                i.unit,
+                i.package_quantity,
+                i.package_price
+        ),
+
+        ScaledIngredients AS (
+            SELECT
+                ingredient_id,
+                ingredient,
+                unit,
+                package_quantity,
+                package_price,
+                base_quantity,
+
+                CASE
+                    WHEN LOWER(
+                        LTRIM(RTRIM(unit))
+                    ) IN (N'szt', N'szt.')
+                    THEN CEILING(
+                        base_quantity * ?
+                    )
+                    ELSE ROUND(
+                        base_quantity * ?,
+                        0
+                    )
+                END AS scaled_quantity
+
+            FROM BaseIngredients
+        )
+
         SELECT
-            i.ingredient_id,
-            i.name AS ingredient,
-            i.unit,
-            i.package_quantity,
-            i.package_price,
-            ri.quantity AS base_quantity,
-            CASE
-                WHEN LOWER(LTRIM(RTRIM(i.unit))) IN (N'szt', N'szt.')
-                THEN CEILING(ri.quantity * ?)
-                ELSE ROUND(ri.quantity * ?, 0)
-            END AS scaled_quantity,
+            ingredient_id,
+            ingredient,
+            unit,
+            package_quantity,
+            package_price,
+            base_quantity,
+            scaled_quantity,
 
             CASE
-                WHEN i.package_quantity IS NULL
-                  OR i.package_price IS NULL
+                WHEN package_quantity IS NULL
+                  OR package_price IS NULL
                 THEN NULL
 
                 ELSE ROUND(
-                    (
-                        CASE
-                            WHEN LOWER(LTRIM(RTRIM(i.unit))) IN (N'szt', N'szt.')
-                            THEN CEILING(ri.quantity * ?)
-                            ELSE ROUND(ri.quantity * ?, 0)
-                        END
-                    )
-                    / NULLIF(i.package_quantity, 0)
-                    * i.package_price,
+                    scaled_quantity
+                    / NULLIF(package_quantity, 0)
+                    * package_price,
                     2
                 )
             END AS ingredient_cost
 
-        FROM RecipeIngredients AS ri
+        FROM ScaledIngredients
 
-        JOIN Ingredients AS i
-            ON i.ingredient_id = ri.ingredient_id
+        ORDER BY ingredient
 
-        WHERE ri.recipe_id = ?
-
-        ORDER BY i.name;
+        OPTION (MAXRECURSION 100);
         """,
         (
-            scale_factor,
-            scale_factor,
-            scale_factor,
-            scale_factor,
             recipe_id,
+            recipe_id,
+            scale_factor,
+            scale_factor,
         ),
     )
 

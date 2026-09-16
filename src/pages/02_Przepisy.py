@@ -240,21 +240,31 @@ with st.expander("Edytuj przepis", expanded=False):
                 with get_connection() as connection:
                     cursor = connection.cursor()
 
-                    cursor.execute(
-                        """
-                        DELETE FROM RecipeIngredients
-                        WHERE recipe_id = ?;
-                        """,
-                        edited_recipe_id,
-                    )
+                cursor.execute(
+                    """
+                    DELETE FROM RecipeComponents
+                    WHERE parent_recipe_id = ?
+                       OR child_recipe_id = ?;
+                    """,
+                    deleted_recipe_id,
+                    deleted_recipe_id,
+                )
 
-                    cursor.execute(
-                        """
-                        DELETE FROM Recipes
-                        WHERE recipe_id = ?;
-                        """,
-                        edited_recipe_id,
-                    )
+                cursor.execute(
+                    """
+                    DELETE FROM RecipeIngredients
+                    WHERE recipe_id = ?;
+                    """,
+                    deleted_recipe_id,
+                )
+
+                cursor.execute(
+                    """
+                    DELETE FROM Recipes
+                    WHERE recipe_id = ?;
+                    """,
+                    deleted_recipe_id,
+                )
 
                     connection.commit()
 
@@ -431,6 +441,212 @@ with st.expander(
                         "bez danych o cenie."
                     )
                     st.rerun()
+
+# =========================================================
+# PODPRZEPISY
+# =========================================================
+
+with st.expander(
+    "Podprzepisy",
+    expanded=False,
+):
+    if len(recipes) < 2:
+        st.info(
+            "Potrzebujesz co najmniej dwóch przepisów."
+        )
+
+    else:
+        parent_recipe_id = st.selectbox(
+            "Przepis główny",
+            options=list(recipe_by_id),
+            format_func=lambda recipe_id: (
+                recipe_by_id[recipe_id]["name"]
+            ),
+            key="component_parent_recipe",
+        )
+
+        child_options = [
+            recipe_id
+            for recipe_id in recipe_by_id
+            if recipe_id != parent_recipe_id
+        ]
+
+        child_recipe_id = st.selectbox(
+            "Przepis dodawany w całości",
+            options=child_options,
+            format_func=lambda recipe_id: (
+                recipe_by_id[recipe_id]["name"]
+            ),
+            key="component_child_recipe",
+        )
+
+        quantity_factor = st.number_input(
+            "Mnożnik przepisu",
+            min_value=0.01,
+            value=1.0,
+            step=0.25,
+            format="%.2f",
+        )
+
+        if st.button(
+            "Dodaj podprzepis",
+            key="add_recipe_component",
+        ):
+            with get_connection() as connection:
+                cursor = connection.cursor()
+
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM RecipeComponents
+                    WHERE parent_recipe_id = ?
+                      AND child_recipe_id = ?;
+                    """,
+                    parent_recipe_id,
+                    child_recipe_id,
+                )
+
+                already_added = (
+                    cursor.fetchone()[0] > 0
+                )
+
+                cursor.execute(
+                    """
+                    WITH Descendants AS (
+                        SELECT child_recipe_id
+                        FROM RecipeComponents
+                        WHERE parent_recipe_id = ?
+
+                        UNION ALL
+
+                        SELECT rc.child_recipe_id
+                        FROM RecipeComponents AS rc
+
+                        JOIN Descendants AS d
+                            ON rc.parent_recipe_id
+                                = d.child_recipe_id
+                    )
+                    SELECT COUNT(*)
+                    FROM Descendants
+                    WHERE child_recipe_id = ?
+
+                    OPTION (MAXRECURSION 100);
+                    """,
+                    child_recipe_id,
+                    parent_recipe_id,
+                )
+
+                creates_cycle = (
+                    cursor.fetchone()[0] > 0
+                )
+
+                if already_added:
+                    st.warning(
+                        "Ten podprzepis jest już dodany."
+                    )
+
+                elif creates_cycle:
+                    st.error(
+                        "Nie można utworzyć cyklicznego "
+                        "powiązania przepisów."
+                    )
+
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO RecipeComponents (
+                            parent_recipe_id,
+                            child_recipe_id,
+                            quantity_factor
+                        )
+                        VALUES (?, ?, ?);
+                        """,
+                        parent_recipe_id,
+                        child_recipe_id,
+                        quantity_factor,
+                    )
+
+                    connection.commit()
+
+                    st.success("Podprzepis został dodany.")
+                    st.rerun()
+
+        current_components = fetch_rows(
+            """
+            SELECT
+                rc.child_recipe_id,
+                r.name AS child_recipe,
+                rc.quantity_factor
+            FROM RecipeComponents AS rc
+
+            JOIN Recipes AS r
+                ON r.recipe_id
+                    = rc.child_recipe_id
+
+            WHERE rc.parent_recipe_id = ?
+
+            ORDER BY r.name;
+            """,
+            (parent_recipe_id,),
+        )
+
+        if current_components:
+            st.dataframe(
+                current_components,
+                use_container_width=True,
+                hide_index=True,
+                column_order=(
+                    "child_recipe",
+                    "quantity_factor",
+                ),
+                column_config={
+                    "child_recipe": "Podprzepis",
+                    "quantity_factor": "Mnożnik",
+                },
+            )
+
+            component_by_id = {
+                row["child_recipe_id"]: row
+                for row in current_components
+            }
+
+            removed_component_id = st.selectbox(
+                "Podprzepis do usunięcia",
+                options=list(component_by_id),
+                format_func=lambda recipe_id: (
+                    component_by_id[recipe_id][
+                        "child_recipe"
+                    ]
+                ),
+                key="remove_recipe_component",
+            )
+
+            if st.button(
+                "Usuń podprzepis",
+                key="remove_component_button",
+            ):
+                with get_connection() as connection:
+                    cursor = connection.cursor()
+
+                    cursor.execute(
+                        """
+                        DELETE FROM RecipeComponents
+                        WHERE parent_recipe_id = ?
+                          AND child_recipe_id = ?;
+                        """,
+                        parent_recipe_id,
+                        removed_component_id,
+                    )
+
+                    connection.commit()
+
+                st.success("Podprzepis został usunięty.")
+                st.rerun()
+
+        else:
+            st.info(
+                "Ten przepis nie ma podprzepisów."
+            )
 
 # =========================================================
 # EDYCJA SKŁADNIKÓW PRZEPISU
