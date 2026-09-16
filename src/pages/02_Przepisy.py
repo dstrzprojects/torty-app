@@ -240,31 +240,31 @@ with st.expander("Edytuj przepis", expanded=False):
                 with get_connection() as connection:
                     cursor = connection.cursor()
 
-                cursor.execute(
-                    """
-                    DELETE FROM RecipeComponents
-                    WHERE parent_recipe_id = ?
-                       OR child_recipe_id = ?;
-                    """,
-                    deleted_recipe_id,
-                    deleted_recipe_id,
-                )
+                    cursor.execute(
+                        """
+                        DELETE FROM RecipeComponents
+                        WHERE parent_recipe_id = ?
+                           OR child_recipe_id = ?;
+                        """,
+                        deleted_recipe_id,
+                        deleted_recipe_id,
+                    )
 
-                cursor.execute(
-                    """
-                    DELETE FROM RecipeIngredients
-                    WHERE recipe_id = ?;
-                    """,
-                    deleted_recipe_id,
-                )
+                    cursor.execute(
+                        """
+                        DELETE FROM RecipeIngredients
+                        WHERE recipe_id = ?;
+                        """,
+                        deleted_recipe_id,
+                    )
 
-                cursor.execute(
-                    """
-                    DELETE FROM Recipes
-                    WHERE recipe_id = ?;
-                    """,
-                    deleted_recipe_id,
-                )
+                    cursor.execute(
+                        """
+                        DELETE FROM Recipes
+                        WHERE recipe_id = ?;
+                        """,
+                        deleted_recipe_id,
+                    )
 
                     connection.commit()
 
