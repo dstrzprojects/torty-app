@@ -25,6 +25,11 @@ navigation = st.navigation(
             title="Wycena",
             icon="💰",
         ),
+        st.Page(
+            "pages/05_Zamowienia.py",
+            title="Zamówienia",
+            icon="📦",
+        ),
     ]
 )
 

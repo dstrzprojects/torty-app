@@ -1,4 +1,2 @@
-USE TortyDB;
-
-SELECT * FROM Ingredients;
-SELECT * FROM Recipes;
+SELECT * FROM dbo.Orders;
+SELECT * FROM dbo.OrderIngredients;
