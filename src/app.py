@@ -24,6 +24,11 @@ navigation = st.navigation(
             title="Skalowanie",
             icon="📐",
         ),
+        st.Page(
+            "pages/04_Wycena.py",
+            title="Wycena",
+            icon="💰",
+        ),
     ]
 )
 
