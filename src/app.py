@@ -19,11 +19,7 @@ navigation = st.navigation(
             title="Przepisy",
             icon="📖",
         ),
-        st.Page(
-            "pages/03_Skalowanie.py",
-            title="Skalowanie",
-            icon="📐",
-        ),
+
         st.Page(
             "pages/04_Wycena.py",
             title="Wycena",
