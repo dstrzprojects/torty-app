@@ -147,6 +147,11 @@ def optional_positive_number(value, field_name):
 # =========================================================
 
 st.header("Zarządzanie przepisami")
+if "pending_recipe_delete" not in st.session_state:
+    st.session_state.pending_recipe_delete = None
+
+if "recipe_delete_success" in st.session_state:
+    st.success(st.session_state.pop("recipe_delete_success"))
 
 for recipe in recipes:
     recipe_id = recipe["recipe_id"]
@@ -159,20 +164,37 @@ for recipe in recipes:
     # -----------------------------------------------------
     # USUWANIE PRZEPISU
     # -----------------------------------------------------
-
     with delete_column:
-        with st.popover(
+        if st.button(
             "🗑️",
-            help="Usuń przepis",
+            key=f"delete_recipe_icon_{recipe_id}",
+            help=f"Usuń przepis: {recipe['name']}",
         ):
-            st.warning(
-                f"Usunąć przepis „{recipe['name']}”?"
-            )
+            st.session_state.pending_recipe_delete = recipe_id
 
+    if st.session_state.pending_recipe_delete == recipe_id:
+        st.warning(
+            f"Czy usunąć przepis „{recipe['name']}”? "
+            "Ta operacja usunie jego składniki i powiązania."
+        )
+
+        confirm_column, cancel_column = st.columns(2)
+
+        with cancel_column:
             if st.button(
-                "Potwierdź usunięcie",
+                "Anuluj",
+                key=f"cancel_delete_{recipe_id}",
+                use_container_width=True,
+            ):
+                st.session_state.pending_recipe_delete = None
+                st.rerun()
+
+        with confirm_column:
+            if st.button(
+                f"Usuń „{recipe['name']}”",
+                key=f"execute_delete_{recipe_id}",
                 type="primary",
-                key=f"confirm_recipe_delete_{recipe_id}",
+                use_container_width=True,
             ):
                 connection = get_connection()
 
@@ -207,19 +229,26 @@ for recipe in recipes:
 
                     connection.commit()
 
-                    st.success("Przepis został usunięty.")
-                    st.rerun()
-
-                except Exception:
+                except Exception as error:
                     connection.rollback()
-
                     st.error(
-                        "Nie można usunąć przepisu. "
-                        "Może być używany w zamówieniu."
+                        "Nie udało się usunąć przepisu. "
+                        "Może być powiązany z zamówieniem "
+                        "lub innymi danymi."
+                    )
+                    st.exception(error)
+
+                else:
+                    st.session_state.pending_recipe_delete = None
+                    st.session_state.recipe_delete_success = (
+                        f"Usunięto przepis „{recipe['name']}”."
                     )
 
                 finally:
                     connection.close()
+
+                if st.session_state.pending_recipe_delete is None:
+                    st.rerun()
 
     # -----------------------------------------------------
     # ROZWIJANY PRZEPIS
