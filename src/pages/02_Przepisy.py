@@ -110,7 +110,9 @@ ingredients = fetch_rows("""
     SELECT
         ingredient_id,
         name,
-        unit
+        package_quantity,
+        unit,
+        package_price
     FROM Ingredients
     ORDER BY name;
 """)
@@ -124,173 +126,6 @@ ingredient_by_id = {
     ingredient["ingredient_id"]: ingredient
     for ingredient in ingredients
 }
-
-
-# =========================================================
-# EDYCJA PRZEPISU
-# =========================================================
-
-
-with st.expander("Edytuj przepis", expanded=False):
-    if not recipes:
-        st.info("Nie ma jeszcze żadnych przepisów.")
-    else:
-        edited_recipe_id = st.selectbox(
-            "Wybierz przepis do edycji",
-            options=list(recipe_by_id),
-            format_func=lambda recipe_id: recipe_by_id[recipe_id]["name"],
-            key="edit_recipe",
-        )
-
-        edited_recipe = recipe_by_id[edited_recipe_id]
-
-        with st.form("edit_recipe_form"):
-            edited_name = st.text_input(
-                "Nazwa przepisu",
-                value=edited_recipe["name"],
-            )
-
-            edited_description = st.text_area(
-                "Opis przepisu",
-                value=edited_recipe["description"] or "",
-            )
-
-            edited_diameter = st.number_input(
-                "Średnica bazowa [cm]",
-                min_value=1.0,
-                value=float(edited_recipe["base_diameter_cm"]),
-                step=1.0,
-            )
-
-            edited_height = st.number_input(
-                "Wysokość bazowa [cm]",
-                min_value=1.0,
-                value=float(edited_recipe["base_height_cm"]),
-                step=1.0,
-            )
-
-            save_recipe = st.form_submit_button("Zapisz zmiany")
-
-        if save_recipe:
-            clean_name = edited_name.strip()
-
-            if not clean_name:
-                st.error("Nazwa przepisu nie może być pusta.")
-            else:
-                with get_connection() as connection:
-                    cursor = connection.cursor()
-
-                    cursor.execute(
-                        """
-                        SELECT COUNT(*)
-                        FROM Recipes
-                        WHERE name = ?
-                          AND recipe_id <> ?;
-                        """,
-                        clean_name,
-                        edited_recipe_id,
-                    )
-
-                    name_taken = cursor.fetchone()[0] > 0
-
-                    if name_taken:
-                        st.warning("Inny przepis ma już taką nazwę.")
-                    else:
-                        cursor.execute(
-                            """
-                            UPDATE Recipes
-                            SET
-                                name = ?,
-                                description = ?,
-                                base_diameter_cm = ?,
-                                base_height_cm = ?
-                            WHERE recipe_id = ?;
-                            """,
-                            clean_name,
-                            edited_description.strip(),
-                            edited_diameter,
-                            edited_height,
-                            edited_recipe_id,
-                        )
-
-                        connection.commit()
-
-                        st.success("Przepis został zaktualizowany.")
-                        st.rerun()
-
-
-    # =====================================================
-    # USUWANIE PRZEPISU
-    # =====================================================
-
-    
-    with st.expander("Usuń przepis", expanded=False):
-        confirm_delete = st.checkbox(
-            f"Potwierdzam usunięcie przepisu: "
-            f"{edited_recipe['name']}",
-            key=f"confirm_delete_{edited_recipe_id}",
-        )
-
-        if st.button(
-            "Usuń przepis",
-            disabled=not confirm_delete,
-            type="primary",
-            key=f"delete_recipe_{edited_recipe_id}",
-        ):
-            try:
-                with get_connection() as connection:
-                    cursor = connection.cursor()
-
-                    cursor.execute(
-                        """
-                        DELETE FROM RecipeComponents
-                        WHERE parent_recipe_id = ?
-                           OR child_recipe_id = ?;
-                        """,
-                        deleted_recipe_id,
-                        deleted_recipe_id,
-                    )
-
-                    cursor.execute(
-                        """
-                        DELETE FROM RecipeIngredients
-                        WHERE recipe_id = ?;
-                        """,
-                        deleted_recipe_id,
-                    )
-
-                    cursor.execute(
-                        """
-                        DELETE FROM Recipes
-                        WHERE recipe_id = ?;
-                        """,
-                        deleted_recipe_id,
-                    )
-
-                    connection.commit()
-
-                st.success("Przepis został usunięty.")
-                st.rerun()
-
-            except Exception as error:
-                st.error(
-                    "Nie udało się usunąć przepisu. "
-                    "Może być powiązany z innymi danymi."
-                )
-                st.exception(error)
-
-# =========================================================
-# ZARZĄDZANIE SKŁADNIKAMI PRZEPISÓW
-# =========================================================
-
-st.header("Składniki przepisów")
-
-st.caption(
-    "Rozwiń przepis, edytuj tabelę, dodaj lub usuń "
-    "wiersze, a następnie zapisz zmiany. "
-    "Cena i wielkość opakowania dotyczą składnika "
-    "we wszystkich przepisach."
-)
 
 
 def optional_positive_number(value, field_name):
@@ -307,37 +142,405 @@ def optional_positive_number(value, field_name):
     return number
 
 
+# =========================================================
+# ZARZĄDZANIE PRZEPISAMI
+# =========================================================
+
+st.header("Zarządzanie przepisami")
+
 for recipe in recipes:
     recipe_id = recipe["recipe_id"]
-    recipe_name = recipe["name"]
 
-    with st.expander(
-        recipe_name,
-        expanded=False,
-    ):
-        recipe_ingredients = fetch_rows(
-            """
-            SELECT
-                i.ingredient_id,
-                i.name AS ingredient,
-                ri.quantity,
-                i.unit,
-                i.package_price,
-                i.package_quantity
-            FROM RecipeIngredients AS ri
+    recipe_column, delete_column = st.columns(
+        [20, 1],
+        vertical_alignment="top",
+    )
 
-            JOIN Ingredients AS i
-                ON i.ingredient_id
-                    = ri.ingredient_id
+    # -----------------------------------------------------
+    # USUWANIE PRZEPISU
+    # -----------------------------------------------------
 
-            WHERE ri.recipe_id = ?
+    with delete_column:
+        with st.popover(
+            "🗑️",
+            help="Usuń przepis",
+        ):
+            st.warning(
+                f"Usunąć przepis „{recipe['name']}”?"
+            )
 
-            ORDER BY i.name;
-            """,
-            (recipe_id,),
-        )
+            if st.button(
+                "Potwierdź usunięcie",
+                type="primary",
+                key=f"confirm_recipe_delete_{recipe_id}",
+            ):
+                connection = get_connection()
 
-        editor_rows = [
+                try:
+                    cursor = connection.cursor()
+
+                    cursor.execute(
+                        """
+                        DELETE FROM RecipeComponents
+                        WHERE parent_recipe_id = ?
+                           OR child_recipe_id = ?;
+                        """,
+                        recipe_id,
+                        recipe_id,
+                    )
+
+                    cursor.execute(
+                        """
+                        DELETE FROM RecipeIngredients
+                        WHERE recipe_id = ?;
+                        """,
+                        recipe_id,
+                    )
+
+                    cursor.execute(
+                        """
+                        DELETE FROM Recipes
+                        WHERE recipe_id = ?;
+                        """,
+                        recipe_id,
+                    )
+
+                    connection.commit()
+
+                    st.success("Przepis został usunięty.")
+                    st.rerun()
+
+                except Exception:
+                    connection.rollback()
+
+                    st.error(
+                        "Nie można usunąć przepisu. "
+                        "Może być używany w zamówieniu."
+                    )
+
+                finally:
+                    connection.close()
+
+    # -----------------------------------------------------
+    # ROZWIJANY PRZEPIS
+    # -----------------------------------------------------
+
+    with recipe_column:
+        with st.expander(
+            (
+                f"{recipe['name']} — "
+                f"{float(recipe['base_diameter_cm']):g} × "
+                f"{float(recipe['base_height_cm']):g} cm"
+            ),
+            expanded=False,
+        ):
+            # ---------------------------------------------
+            # DANE PRZEPISU
+            # ---------------------------------------------
+
+            st.subheader("Dane przepisu")
+
+            recipe_data = pd.DataFrame(
+                [
+                    {
+                        "name": recipe["name"],
+                        "base_diameter_cm": float(
+                            recipe["base_diameter_cm"]
+                        ),
+                        "base_height_cm": float(
+                            recipe["base_height_cm"]
+                        ),
+                    }
+                ]
+            )
+
+            edited_recipe_data = st.data_editor(
+                recipe_data,
+                use_container_width=True,
+                hide_index=True,
+                key=f"recipe_data_{recipe_id}",
+                column_config={
+                    "name": st.column_config.TextColumn(
+                        "Nazwa przepisu",
+                        required=True,
+                        width="large",
+                    ),
+                    "base_diameter_cm": (
+                        st.column_config.NumberColumn(
+                            "Średnica [cm]",
+                            required=True,
+                            min_value=1.0,
+                            step=1.0,
+                        )
+                    ),
+                    "base_height_cm": (
+                        st.column_config.NumberColumn(
+                            "Wysokość [cm]",
+                            required=True,
+                            min_value=1.0,
+                            step=1.0,
+                        )
+                    ),
+                },
+            )
+
+            edited_description = st.text_area(
+                "Opis przepisu",
+                value=recipe["description"] or "",
+                height=120,
+                key=f"recipe_description_{recipe_id}",
+            )
+
+            if st.button(
+                "Zapisz dane przepisu",
+                key=f"save_recipe_data_{recipe_id}",
+            ):
+                edited_recipe = (
+                    edited_recipe_data.iloc[0]
+                )
+
+                edited_name = str(
+                    edited_recipe["name"]
+                ).strip()
+
+                edited_diameter = float(
+                    edited_recipe["base_diameter_cm"]
+                )
+
+                edited_height = float(
+                    edited_recipe["base_height_cm"]
+                )
+
+                if not edited_name:
+                    st.error(
+                        "Nazwa przepisu nie może być pusta."
+                    )
+
+                else:
+                    with get_connection() as connection:
+                        cursor = connection.cursor()
+
+                        cursor.execute(
+                            """
+                            SELECT COUNT(*)
+                            FROM Recipes
+                            WHERE name = ?
+                              AND recipe_id <> ?;
+                            """,
+                            edited_name,
+                            recipe_id,
+                        )
+
+                        if cursor.fetchone()[0] > 0:
+                            st.error(
+                                "Inny przepis ma już taką nazwę."
+                            )
+
+                        else:
+                            cursor.execute(
+                                """
+                                UPDATE Recipes
+                                SET
+                                    name = ?,
+                                    description = ?,
+                                    base_diameter_cm = ?,
+                                    base_height_cm = ?
+                                WHERE recipe_id = ?;
+                                """,
+                                edited_name,
+                                edited_description.strip() or None,
+                                edited_diameter,
+                                edited_height,
+                                recipe_id,
+                            )
+
+                            connection.commit()
+
+                            st.success(
+                                "Dane przepisu zapisane."
+                            )
+                            st.rerun()
+
+            # ---------------------------------------------
+            # SKŁADNIKI PRZEPISU
+            # ---------------------------------------------
+
+            st.subheader("Składniki")
+
+            recipe_ingredients = fetch_rows(
+                """
+                SELECT
+                    i.ingredient_id,
+                    i.name AS ingredient,
+                    ri.quantity,
+                    i.unit,
+                    i.package_price,
+                    i.package_quantity
+                FROM RecipeIngredients AS ri
+
+                JOIN Ingredients AS i
+                    ON i.ingredient_id =
+                        ri.ingredient_id
+
+                WHERE ri.recipe_id = ?
+
+                ORDER BY i.name;
+                """,
+                (recipe_id,),
+            )
+
+            current_ingredient_ids = {
+                row["ingredient_id"]
+                for row in recipe_ingredients
+            }
+
+            available_ingredients = [
+                ingredient
+                for ingredient in ingredients
+                if ingredient["ingredient_id"]
+                not in current_ingredient_ids
+            ]
+
+            # ---------------------------------------------
+            # DODAWANIE ISTNIEJĄCEGO SKŁADNIKA
+            # ---------------------------------------------
+
+
+            if not available_ingredients:
+                st.info(
+                    "Wszystkie dostępne składniki są już "
+                    "w tym przepisie."
+                )
+
+            else:
+                available_by_id = {
+                    ingredient["ingredient_id"]: ingredient
+                    for ingredient in available_ingredients
+                }
+
+                selected_ingredient_id = st.selectbox(
+                    "Wyszukaj i dodaj istniejący składnik",
+                    options=list(available_by_id),
+                    format_func=lambda ingredient_id: (
+                        available_by_id[
+                            ingredient_id
+                        ]["name"]
+                    ),
+                    key=f"available_ingredient_{recipe_id}",
+                    help=(
+                        "Rozwiń listę i zacznij wpisywać "
+                        "nazwę składnika."
+                    ),
+                )
+
+                selected_ingredient = available_by_id[
+                    selected_ingredient_id
+                ]
+
+                detail_col1, detail_col2, detail_col3 = (
+                    st.columns(3)
+                )
+
+                with detail_col1:
+                    st.text_input(
+                        "Jednostka",
+                        value=selected_ingredient["unit"],
+                        disabled=True,
+                        key=(
+                            f"ingredient_unit_"
+                            f"{recipe_id}"
+                        ),
+                    )
+
+                with detail_col2:
+                    st.number_input(
+                        "Cena opakowania",
+                        value=(
+                            0.0
+                            if selected_ingredient[
+                                "package_price"
+                            ] is None
+                            else float(
+                                selected_ingredient[
+                                    "package_price"
+                                ]
+                            )
+                        ),
+                        disabled=True,
+                        key=(
+                            f"ingredient_price_"
+                            f"{recipe_id}"
+                        ),
+                    )
+
+                with detail_col3:
+                    st.number_input(
+                        "Ilość w opakowaniu",
+                        value=(
+                            0.0
+                            if selected_ingredient[
+                                "package_quantity"
+                            ] is None
+                            else float(
+                                selected_ingredient[
+                                    "package_quantity"
+                                ]
+                            )
+                        ),
+                        disabled=True,
+                        key=(
+                            f"ingredient_package_"
+                            f"{recipe_id}"
+                        ),
+                    )
+
+                recipe_quantity = st.number_input(
+                    (
+                        "Ilość w przepisie "
+                        f"[{selected_ingredient['unit']}]"
+                    ),
+                    min_value=0.01,
+                    value=1.0,
+                    step=1.0,
+                    key=f"new_quantity_{recipe_id}",
+                )
+
+                if st.button(
+                    "Dodaj do przepisu",
+                    key=f"add_existing_{recipe_id}",
+                ):
+                    with get_connection() as connection:
+                        cursor = connection.cursor()
+
+                        cursor.execute(
+                            """
+                            INSERT INTO RecipeIngredients (
+                                recipe_id,
+                                ingredient_id,
+                                quantity
+                            )
+                            VALUES (?, ?, ?);
+                            """,
+                            recipe_id,
+                            selected_ingredient_id,
+                            recipe_quantity,
+                        )
+
+                        connection.commit()
+
+                    st.success(
+                        "Składnik został dodany."
+                    )
+                    st.rerun()
+
+            # ---------------------------------------------
+            # TABELA AKTUALNYCH SKŁADNIKÓW
+            # ---------------------------------------------
+
+            
+            recipe_name = recipe["name"]
+
+            editor_rows = [
             {
                 "ingredient_id": row["ingredient_id"],
                 "ingredient": row["ingredient"],
@@ -359,293 +562,253 @@ for recipe in recipes:
             for row in recipe_ingredients
         ]
 
-        ingredient_dataframe = pd.DataFrame(
-            editor_rows,
-            columns=[
-                "ingredient_id",
-                "ingredient",
-                "quantity",
-                "unit",
-                "package_price",
-                "package_quantity",
-            ],
-        )
-        st.info(
-            "🗑️ Aby usunąć składnik, zaznacz jego wiersz "
-            "klikając pole po lewej stronie tabeli, a następnie "
-            "użyj klawisza Delete lub ikony usuwania. "
-            "➕ Nowy składnik dodasz przyciskiem pod tabelą."
-        )
-        edited_dataframe = st.data_editor(
-            ingredient_dataframe,
-            key=f"recipe_editor_{recipe_id}",
-            use_container_width=True,
-            hide_index=True,
-            num_rows="dynamic",
-            column_order=(
-                "ingredient",
-                "quantity",
-                "unit",
-                "package_price",
-                "package_quantity",
-            ),
-            column_config={
-                "ingredient_id": None,
-
-                "ingredient": st.column_config.TextColumn(
-                    "Składnik",
-                    required=True,
-                    width="large",
-                    help=(
-                        "Wpisz istniejący lub nowy "
-                        "składnik."
-                    ),
+            ingredient_dataframe = pd.DataFrame(
+                editor_rows,
+                columns=[
+                    "ingredient_id",
+                    "ingredient",
+                    "quantity",
+                    "unit",
+                    "package_price",
+                    "package_quantity",
+                ],
+            )
+            st.info(
+                "🗑️ Aby usunąć składnik, zaznacz jego wiersz "
+                "klikając pole po lewej stronie tabeli, a następnie "
+                "użyj klawisza Delete lub ikony usuwania. "
+                "➕ Nowy składnik dodasz przyciskiem pod tabelą."
+            )
+            edited_dataframe = st.data_editor(
+                ingredient_dataframe,
+                key=f"recipe_editor_{recipe_id}",
+                use_container_width=True,
+                hide_index=True,
+                num_rows="dynamic",
+                column_order=(
+                    "ingredient",
+                    "quantity",
+                    "unit",
+                    "package_price",
+                    "package_quantity",
                 ),
+                column_config={
+                    "ingredient_id": None,
 
-                "quantity": st.column_config.NumberColumn(
-                    "Ilość w przepisie",
-                    required=True,
-                    min_value=0.01,
-                    step=1.0,
-                    format="%.2f",
-                ),
-
-                "unit": st.column_config.SelectboxColumn(
-                    "Jednostka",
-                    options=["g", "ml", "szt"],
-                    required=True,
-                ),
-
-                "package_price": (
-                    st.column_config.NumberColumn(
-                        "Cena opakowania",
-                        min_value=0.01,
-                        step=0.10,
-                        format="%.2f zł",
+                    "ingredient": st.column_config.TextColumn(
+                        "Składnik",
+                        required=True,
+                        width="large",
                         help=(
-                            "Może pozostać pusta."
+                            "Wpisz istniejący lub nowy "
+                            "składnik."
                         ),
-                    )
-                ),
+                    ),
 
-                "package_quantity": (
-                    st.column_config.NumberColumn(
-                        "Ilość w opakowaniu",
+                    "quantity": st.column_config.NumberColumn(
+                        "Ilość w przepisie",
+                        required=True,
                         min_value=0.01,
                         step=1.0,
                         format="%.2f",
-                        help=(
-                            "Może pozostać pusta."
-                        ),
-                    )
-                ),
-            },
-        )
+                    ),
 
-        if st.button(
-            "Zapisz składniki",
-            type="primary",
-            key=f"save_recipe_ingredients_{recipe_id}",
-        ):
-            try:
-                validated_rows = []
-                used_names = set()
+                    "unit": st.column_config.SelectboxColumn(
+                        "Jednostka",
+                        options=["g", "ml", "szt"],
+                        required=True,
+                    ),
 
-                for row in edited_dataframe.to_dict(
-                    orient="records"
-                ):
-                    ingredient_name = str(
-                        row.get("ingredient") or ""
-                    ).strip()
-
-                    if not ingredient_name:
-                        raise ValueError(
-                            "Nazwa składnika nie może "
-                            "być pusta."
-                        )
-
-                    normalized_name = (
-                        ingredient_name.casefold()
-                    )
-
-                    if normalized_name in used_names:
-                        raise ValueError(
-                            f"Składnik „{ingredient_name}” "
-                            "występuje w tabeli więcej "
-                            "niż raz."
-                        )
-
-                    used_names.add(normalized_name)
-
-                    quantity = optional_positive_number(
-                        row.get("quantity"),
-                        "Ilość w przepisie",
-                    )
-
-                    if quantity is None:
-                        raise ValueError(
-                            f"Podaj ilość składnika "
-                            f"„{ingredient_name}”."
-                        )
-
-                    unit = str(
-                        row.get("unit") or ""
-                    ).strip()
-
-                    if unit not in ("g", "ml", "szt"):
-                        raise ValueError(
-                            f"Nieprawidłowa jednostka dla "
-                            f"„{ingredient_name}”."
-                        )
-
-                    package_price = (
-                        optional_positive_number(
-                            row.get("package_price"),
+                    "package_price": (
+                        st.column_config.NumberColumn(
                             "Cena opakowania",
-                        )
-                    )
-
-                    package_quantity = (
-                        optional_positive_number(
-                            row.get(
-                                "package_quantity"
+                            min_value=0.01,
+                            step=0.10,
+                            format="%.2f zł",
+                            help=(
+                                "Może pozostać pusta."
                             ),
+                        )
+                    ),
+
+                    "package_quantity": (
+                        st.column_config.NumberColumn(
                             "Ilość w opakowaniu",
+                            min_value=0.01,
+                            step=1.0,
+                            format="%.2f",
+                            help=(
+                                "Może pozostać pusta."
+                            ),
                         )
-                    )
+                    ),
+                },
+            )
 
-                    ingredient_id_value = row.get(
-                        "ingredient_id"
-                    )
-
-                    ingredient_id = (
-                        None
-                        if (
-                            ingredient_id_value is None
-                            or pd.isna(
-                                ingredient_id_value
-                            )
-                        )
-                        else int(ingredient_id_value)
-                    )
-
-                    validated_rows.append(
-                        {
-                            "ingredient_id": (
-                                ingredient_id
-                            ),
-                            "ingredient": (
-                                ingredient_name
-                            ),
-                            "quantity": quantity,
-                            "unit": unit,
-                            "package_price": (
-                                package_price
-                            ),
-                            "package_quantity": (
-                                package_quantity
-                            ),
-                        }
-                    )
-
-                connection = get_connection()
-
+            if st.button(
+                "Zapisz składniki",
+                type="primary",
+                key=f"save_recipe_ingredients_{recipe_id}",
+            ):
                 try:
-                    cursor = connection.cursor()
+                    validated_rows = []
+                    used_names = set()
 
-                    cursor.execute(
-                        """
-                        SELECT ingredient_id
-                        FROM RecipeIngredients
-                        WHERE recipe_id = ?;
-                        """,
-                        recipe_id,
-                    )
+                    for row in edited_dataframe.to_dict(
+                        orient="records"
+                    ):
+                        ingredient_name = str(
+                            row.get("ingredient") or ""
+                        ).strip()
 
-                    previous_ingredient_ids = {
-                        row[0]
-                        for row in cursor.fetchall()
-                    }
-
-                    saved_ingredient_ids = set()
-
-                    for row in validated_rows:
-                        ingredient_id = row[
-                            "ingredient_id"
-                        ]
-
-                        if ingredient_id is not None:
-                            cursor.execute(
-                                """
-                                SELECT COUNT(*)
-                                FROM Ingredients
-                                WHERE name = ?
-                                  AND ingredient_id <> ?;
-                                """,
-                                row["ingredient"],
-                                ingredient_id,
+                        if not ingredient_name:
+                            raise ValueError(
+                                "Nazwa składnika nie może "
+                                "być pusta."
                             )
 
-                            if cursor.fetchone()[0] > 0:
-                                raise ValueError(
-                                    f"Inny składnik ma już "
-                                    f"nazwę "
-                                    f"„{row['ingredient']}”."
+                        normalized_name = (
+                            ingredient_name.casefold()
+                        )
+
+                        if normalized_name in used_names:
+                            raise ValueError(
+                                f"Składnik „{ingredient_name}” "
+                                "występuje w tabeli więcej "
+                                "niż raz."
+                            )
+
+                        used_names.add(normalized_name)
+
+                        quantity = optional_positive_number(
+                            row.get("quantity"),
+                            "Ilość w przepisie",
+                        )
+
+                        if quantity is None:
+                            raise ValueError(
+                                f"Podaj ilość składnika "
+                                f"„{ingredient_name}”."
+                            )
+
+                        unit = str(
+                            row.get("unit") or ""
+                        ).strip()
+
+                        if unit not in ("g", "ml", "szt"):
+                            raise ValueError(
+                                f"Nieprawidłowa jednostka dla "
+                                f"„{ingredient_name}”."
+                            )
+
+                        package_price = (
+                            optional_positive_number(
+                                row.get("package_price"),
+                                "Cena opakowania",
+                            )
+                        )
+
+                        package_quantity = (
+                            optional_positive_number(
+                                row.get(
+                                    "package_quantity"
+                                ),
+                                "Ilość w opakowaniu",
+                            )
+                        )
+
+                        ingredient_id_value = row.get(
+                            "ingredient_id"
+                        )
+
+                        ingredient_id = (
+                            None
+                            if (
+                                ingredient_id_value is None
+                                or pd.isna(
+                                    ingredient_id_value
+                                )
+                            )
+                            else int(ingredient_id_value)
+                        )
+
+                        validated_rows.append(
+                            {
+                                "ingredient_id": (
+                                    ingredient_id
+                                ),
+                                "ingredient": (
+                                    ingredient_name
+                                ),
+                                "quantity": quantity,
+                                "unit": unit,
+                                "package_price": (
+                                    package_price
+                                ),
+                                "package_quantity": (
+                                    package_quantity
+                                ),
+                            }
+                        )
+
+                    connection = get_connection()
+
+                    try:
+                        cursor = connection.cursor()
+
+                        cursor.execute(
+                            """
+                            SELECT ingredient_id
+                            FROM RecipeIngredients
+                            WHERE recipe_id = ?;
+                            """,
+                            recipe_id,
+                        )
+
+                        previous_ingredient_ids = {
+                            row[0]
+                            for row in cursor.fetchall()
+                        }
+
+                        saved_ingredient_ids = set()
+
+                        for row in validated_rows:
+                            ingredient_id = row[
+                                "ingredient_id"
+                            ]
+
+                            if ingredient_id is not None:
+                                cursor.execute(
+                                    """
+                                    SELECT COUNT(*)
+                                    FROM Ingredients
+                                    WHERE name = ?
+                                      AND ingredient_id <> ?;
+                                    """,
+                                    row["ingredient"],
+                                    ingredient_id,
                                 )
 
-                            cursor.execute(
-                                """
-                                UPDATE Ingredients
-                                SET
-                                    name = ?,
-                                    unit = ?,
-                                    package_price = ?,
-                                    package_quantity = ?,
-                                    updated_at =
-                                        SYSDATETIME()
-                                WHERE ingredient_id = ?;
-                                """,
-                                row["ingredient"],
-                                row["unit"],
-                                row["package_price"],
-                                row["package_quantity"],
-                                ingredient_id,
-                            )
-
-                        else:
-                            cursor.execute(
-                                """
-                                SELECT ingredient_id
-                                FROM Ingredients
-                                WHERE name = ?;
-                                """,
-                                row["ingredient"],
-                            )
-
-                            existing = cursor.fetchone()
-
-                            if existing:
-                                ingredient_id = existing[0]
+                                if cursor.fetchone()[0] > 0:
+                                    raise ValueError(
+                                        f"Inny składnik ma już "
+                                        f"nazwę "
+                                        f"„{row['ingredient']}”."
+                                    )
 
                                 cursor.execute(
                                     """
                                     UPDATE Ingredients
                                     SET
+                                        name = ?,
                                         unit = ?,
-                                        package_price =
-                                            COALESCE(
-                                                ?,
-                                                package_price
-                                            ),
-                                        package_quantity =
-                                            COALESCE(
-                                                ?,
-                                                package_quantity
-                                            ),
+                                        package_price = ?,
+                                        package_quantity = ?,
                                         updated_at =
                                             SYSDATETIME()
                                     WHERE ingredient_id = ?;
                                     """,
+                                    row["ingredient"],
                                     row["unit"],
                                     row["package_price"],
                                     row["package_quantity"],
@@ -655,126 +818,166 @@ for recipe in recipes:
                             else:
                                 cursor.execute(
                                     """
-                                    INSERT INTO Ingredients (
-                                        name,
-                                        package_quantity,
-                                        unit,
-                                        package_price
-                                    )
-                                    OUTPUT
-                                        INSERTED.ingredient_id
-                                    VALUES (?, ?, ?, ?);
+                                    SELECT ingredient_id
+                                    FROM Ingredients
+                                    WHERE name = ?;
                                     """,
                                     row["ingredient"],
-                                    row["package_quantity"],
-                                    row["unit"],
-                                    row["package_price"],
                                 )
 
-                                ingredient_id = (
-                                    cursor.fetchone()[0]
+                                existing = cursor.fetchone()
+
+                                if existing:
+                                    ingredient_id = existing[0]
+
+                                    cursor.execute(
+                                        """
+                                        UPDATE Ingredients
+                                        SET
+                                            unit = ?,
+                                            package_price =
+                                                COALESCE(
+                                                    ?,
+                                                    package_price
+                                                ),
+                                            package_quantity =
+                                                COALESCE(
+                                                    ?,
+                                                    package_quantity
+                                                ),
+                                            updated_at =
+                                                SYSDATETIME()
+                                        WHERE ingredient_id = ?;
+                                        """,
+                                        row["unit"],
+                                        row["package_price"],
+                                        row["package_quantity"],
+                                        ingredient_id,
+                                    )
+
+                                else:
+                                    cursor.execute(
+                                        """
+                                        INSERT INTO Ingredients (
+                                            name,
+                                            package_quantity,
+                                            unit,
+                                            package_price
+                                        )
+                                        OUTPUT
+                                            INSERTED.ingredient_id
+                                        VALUES (?, ?, ?, ?);
+                                        """,
+                                        row["ingredient"],
+                                        row["package_quantity"],
+                                        row["unit"],
+                                        row["package_price"],
+                                    )
+
+                                    ingredient_id = (
+                                        cursor.fetchone()[0]
+                                    )
+
+                            if (
+                                ingredient_id
+                                in saved_ingredient_ids
+                            ):
+                                raise ValueError(
+                                    f"Składnik "
+                                    f"„{row['ingredient']}” "
+                                    "został dodany więcej "
+                                    "niż raz."
                                 )
 
-                        if (
-                            ingredient_id
-                            in saved_ingredient_ids
-                        ):
-                            raise ValueError(
-                                f"Składnik "
-                                f"„{row['ingredient']}” "
-                                "został dodany więcej "
-                                "niż raz."
+                            saved_ingredient_ids.add(
+                                ingredient_id
                             )
 
-                        saved_ingredient_ids.add(
-                            ingredient_id
-                        )
-
-                        cursor.execute(
-                            """
-                            SELECT COUNT(*)
-                            FROM RecipeIngredients
-                            WHERE recipe_id = ?
-                              AND ingredient_id = ?;
-                            """,
-                            recipe_id,
-                            ingredient_id,
-                        )
-
-                        mapping_exists = (
-                            cursor.fetchone()[0] > 0
-                        )
-
-                        if mapping_exists:
                             cursor.execute(
                                 """
-                                UPDATE RecipeIngredients
-                                SET quantity = ?
+                                SELECT COUNT(*)
+                                FROM RecipeIngredients
                                 WHERE recipe_id = ?
                                   AND ingredient_id = ?;
                                 """,
-                                row["quantity"],
                                 recipe_id,
                                 ingredient_id,
                             )
 
-                        else:
-                            cursor.execute(
-                                """
-                                INSERT INTO
-                                    RecipeIngredients (
-                                        recipe_id,
-                                        ingredient_id,
-                                        quantity
-                                    )
-                                VALUES (?, ?, ?);
-                                """,
-                                recipe_id,
-                                ingredient_id,
-                                row["quantity"],
+                            mapping_exists = (
+                                cursor.fetchone()[0] > 0
                             )
 
-                    removed_ingredient_ids = (
-                        previous_ingredient_ids
-                        - saved_ingredient_ids
-                    )
+                            if mapping_exists:
+                                cursor.execute(
+                                    """
+                                    UPDATE RecipeIngredients
+                                    SET quantity = ?
+                                    WHERE recipe_id = ?
+                                      AND ingredient_id = ?;
+                                    """,
+                                    row["quantity"],
+                                    recipe_id,
+                                    ingredient_id,
+                                )
 
-                    for removed_ingredient_id in (
-                        removed_ingredient_ids
-                    ):
-                        cursor.execute(
-                            """
-                            DELETE FROM RecipeIngredients
-                            WHERE recipe_id = ?
-                              AND ingredient_id = ?;
-                            """,
-                            recipe_id,
-                            removed_ingredient_id,
+                            else:
+                                cursor.execute(
+                                    """
+                                    INSERT INTO
+                                        RecipeIngredients (
+                                            recipe_id,
+                                            ingredient_id,
+                                            quantity
+                                        )
+                                    VALUES (?, ?, ?);
+                                    """,
+                                    recipe_id,
+                                    ingredient_id,
+                                    row["quantity"],
+                                )
+
+                        removed_ingredient_ids = (
+                            previous_ingredient_ids
+                            - saved_ingredient_ids
                         )
 
-                    connection.commit()
+                        for removed_ingredient_id in (
+                            removed_ingredient_ids
+                        ):
+                            cursor.execute(
+                                """
+                                DELETE FROM RecipeIngredients
+                                WHERE recipe_id = ?
+                                  AND ingredient_id = ?;
+                                """,
+                                recipe_id,
+                                removed_ingredient_id,
+                            )
 
-                except Exception:
-                    connection.rollback()
-                    raise
+                        connection.commit()
 
-                finally:
-                    connection.close()
+                    except Exception:
+                        connection.rollback()
+                        raise
 
-                st.success(
-                    f"Składniki przepisu "
-                    f"„{recipe_name}” zostały zapisane."
-                )
-                st.rerun()
+                    finally:
+                        connection.close()
 
-            except ValueError as error:
-                st.error(str(error))
+                    st.success(
+                        f"Składniki przepisu "
+                        f"„{recipe_name}” zostały zapisane."
+                    )
+                    st.rerun()
 
-            except Exception as error:
-                st.error(
-                    "Nie udało się zapisać składników."
-                )
-                st.exception(error)
+                except ValueError as error:
+                    st.error(str(error))
+
+                except Exception as error:
+                    st.error(
+                        "Nie udało się zapisać składników."
+                    )
+                    st.exception(error)
 
 # =========================================================
 # PODPRZEPISY
