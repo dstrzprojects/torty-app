@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import re
 
 from db import get_connection
 
@@ -90,6 +91,147 @@ with st.expander("Utwórz przepis", expanded=False):
                     st.success("Przepis został utworzony.")
                     st.rerun()
 
+# =========================================================
+# Kopiowanie DANYCH
+# =========================================================
+
+copy_recipes = fetch_rows("""
+    SELECT
+        recipe_id,
+        name
+    FROM Recipes
+    ORDER BY name;
+""")
+
+
+with st.expander("Skopiuj przepis"):
+    if not copy_recipes:
+        st.info("Nie ma jeszcze przepisu do skopiowania.")
+    else:
+        copy_recipe_by_id = {
+            recipe["recipe_id"]: recipe
+            for recipe in copy_recipes
+        }
+
+        with st.form("copy_recipe_form"):
+            source_recipe_id = st.selectbox(
+                "Wybierz przepis",
+                options=list(copy_recipe_by_id),
+                format_func=lambda recipe_id: (
+                    copy_recipe_by_id[recipe_id]["name"]
+                ),
+            )
+
+            copy_submitted = st.form_submit_button(
+                "Utwórz kopię",
+                use_container_width=True,
+            )
+
+        if copy_submitted:
+            source_name = copy_recipe_by_id[
+                source_recipe_id
+            ]["name"]
+
+            # Jeżeli kopiujemy np. „Biszkopt (2)”,
+            # następna kopia otrzyma nazwę „Biszkopt (3)”.
+            name_match = re.match(
+                r"^(.*?)(?: \((\d+)\))?$",
+                source_name,
+            )
+
+            base_name = name_match.group(1)
+
+            existing_names = {
+                recipe["name"].casefold()
+                for recipe in copy_recipes
+            }
+
+            copy_number = 2
+            new_recipe_name = f"{base_name} ({copy_number})"
+
+            while new_recipe_name.casefold() in existing_names:
+                copy_number += 1
+                new_recipe_name = (
+                    f"{base_name} ({copy_number})"
+                )
+
+            try:
+                with get_connection() as connection:
+                    cursor = connection.cursor()
+
+                    # Kopiowanie danych przepisu
+                    cursor.execute(
+                        """
+                        INSERT INTO Recipes (
+                            name,
+                            description,
+                            base_diameter_cm,
+                            base_height_cm
+                        )
+                        OUTPUT INSERTED.recipe_id
+                        SELECT
+                            ?,
+                            description,
+                            base_diameter_cm,
+                            base_height_cm
+                        FROM Recipes
+                        WHERE recipe_id = ?;
+                        """,
+                        new_recipe_name,
+                        source_recipe_id,
+                    )
+
+                    new_recipe_id = cursor.fetchone()[0]
+
+                    # Kopiowanie własnych składników
+                    cursor.execute(
+                        """
+                        INSERT INTO RecipeIngredients (
+                            recipe_id,
+                            ingredient_id,
+                            quantity
+                        )
+                        SELECT
+                            ?,
+                            ingredient_id,
+                            quantity
+                        FROM RecipeIngredients
+                        WHERE recipe_id = ?;
+                        """,
+                        new_recipe_id,
+                        source_recipe_id,
+                    )
+
+                    # Kopiowanie dodanych podprzepisów
+                    cursor.execute(
+                        """
+                        INSERT INTO RecipeComponents (
+                            parent_recipe_id,
+                            child_recipe_id,
+                            quantity_factor
+                        )
+                        SELECT
+                            ?,
+                            child_recipe_id,
+                            quantity_factor
+                        FROM RecipeComponents
+                        WHERE parent_recipe_id = ?;
+                        """,
+                        new_recipe_id,
+                        source_recipe_id,
+                    )
+
+                    connection.commit()
+
+                st.success(
+                    f"Utworzono przepis „{new_recipe_name}”."
+                )
+                st.rerun()
+
+            except Exception as error:
+                st.error(
+                    f"Nie udało się skopiować przepisu: {error}"
+                )
 
 # =========================================================
 # POBIERANIE DANYCH
