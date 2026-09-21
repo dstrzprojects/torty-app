@@ -195,7 +195,7 @@ with st.expander("Pozostałe koszty", expanded=False):
         hourly_rate = st.number_input(
             "Stawka godzinowa [zł]",
             min_value=0.0,
-            value=30.0,
+            value=50.0,
             step=5.0,
             key="valuation_hourly_rate",
         )
