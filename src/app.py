@@ -19,7 +19,11 @@ navigation = st.navigation(
             title="Przepisy",
             icon="📖",
         ),
-
+        st.Page(
+            "pages/06_Szybka_Wycena.py",
+            title="Szybka wycena",
+            icon="🧮",
+        ),
         st.Page(
             "pages/04_Wycena.py",
             title="Wycena",
@@ -30,6 +34,7 @@ navigation = st.navigation(
             title="Zamówienia",
             icon="📦",
         ),
+
     ]
 )
 
