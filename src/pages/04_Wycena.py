@@ -1,14 +1,27 @@
 import streamlit as st
+from datetime import datetime, time
+
+from db import get_connection
 
 from pricing import (
     calculate_scaled_ingredients,
     get_recipes,
 )
-from valuation_cart import get_valuation_items
+
+from valuation_cart import (
+    clear_valuation_items,
+    get_valuation_items,
+)
 
 
 st.title("Wycena")
+saved_order_message = st.session_state.pop(
+    "saved_order_message",
+    None,
+)
 
+if saved_order_message:
+    st.success(saved_order_message)
 
 # =========================================================
 # PRZEPISY I WSPÓLNA LISTA POZYCJI
@@ -45,7 +58,7 @@ if not valuation_items:
 # =========================================================
 # OBLICZANIE WSZYSTKICH POZYCJI
 # =========================================================
-
+calculated_items = []
 position_rows = []
 ingredient_rows = []
 missing_price_ingredients = set()
@@ -90,7 +103,19 @@ for item_id, item in valuation_items.items():
     position_cost = float(
         pricing_result["ingredients_cost"]
     )
-
+    calculated_items.append(
+        {
+            "item_id": item_id,
+            "recipe_id": recipe_id,
+            "recipe_name": recipe["name"],
+            "position_name": position_name,
+            "target_diameter": target_diameter,
+            "target_height": target_height,
+            "multiplier": multiplier,
+            "ingredients_cost": position_cost,
+            "ingredients": pricing_result["ingredients"],
+        }
+    )
     ingredients_cost += position_cost
 
     position_rows.append(
@@ -387,6 +412,279 @@ with st.expander("Cena sprzedaży", expanded=True):
         )
 
 
+# =========================================================
+# ZAPIS JAKO ZREALIZOWANE ZAMÓWIENIE
+# =========================================================
+
+with st.expander(
+    "Zapisz jako zrealizowane zamówienie",
+    expanded=False,
+):
+    st.caption(
+        "Zostanie zapisany aktualny stan przepisów, "
+        "składników, cen i kosztów."
+    )
+
+    with st.form("save_completed_order_form"):
+        order_col1, order_col2 = st.columns(2)
+
+        with order_col1:
+            completed_customer_name = st.text_input(
+                "Klient lub nazwa zamówienia",
+                value="Klient detaliczny",
+            )
+
+            completed_date = st.date_input(
+                "Data realizacji",
+                value=datetime.now().date(),
+            )
+
+        with order_col2:
+            received_amount = st.number_input(
+                "Otrzymana kwota [zł]",
+                min_value=0.0,
+                value=float(selling_price),
+                step=10.0,
+                format="%.2f",
+            )
+
+            clear_after_save = st.checkbox(
+                "Wyczyść wycenę po zapisaniu",
+                value=True,
+            )
+
+        completed_notes = st.text_area(
+            "Uwagi",
+            placeholder=(
+                "Opcjonalne informacje o zamówieniu"
+            ),
+        )
+
+        save_completed_order = st.form_submit_button(
+            "Zapisz zrealizowane zamówienie",
+            type="primary",
+            use_container_width=True,
+            disabled=bool(missing_price_ingredients),
+        )
+
+    if save_completed_order:
+        clean_customer_name = (
+            completed_customer_name.strip()
+        )
+        clean_notes = completed_notes.strip()
+
+        if not clean_customer_name:
+            st.error(
+                "Podaj klienta lub nazwę zamówienia."
+            )
+
+        elif received_amount > selling_price:
+            st.error(
+                "Otrzymana kwota nie może być większa "
+                "od ceny sprzedaży."
+            )
+
+        elif not calculated_items:
+            st.error(
+                "Wycena nie zawiera żadnej pozycji."
+            )
+
+        else:
+            completed_datetime = datetime.combine(
+                completed_date,
+                time(hour=12),
+            )
+
+            first_item = calculated_items[0]
+
+            if len(calculated_items) == 1:
+                order_name_snapshot = first_item[
+                    "recipe_name"
+                ]
+            else:
+                order_name_snapshot = (
+                    f"Wycena złożona "
+                    f"({len(calculated_items)} pozycji)"
+                )
+
+            connection = get_connection()
+
+            try:
+                cursor = connection.cursor()
+
+                # Główny rekord zamówienia.
+                # Pola pojedynczego przepisu zachowujemy
+                # dla zgodności ze starszym modułem.
+                cursor.execute(
+                    """
+                    INSERT INTO Orders (
+                        recipe_id,
+                        recipe_name_snapshot,
+                        customer_name,
+                        customer_phone,
+                        target_diameter_cm,
+                        target_height_cm,
+                        correction_percent,
+                        due_date,
+                        status,
+                        ingredients_cost,
+                        work_hours,
+                        hourly_rate,
+                        work_cost,
+                        utilities_cost,
+                        depreciation_cost,
+                        decorations_cost,
+                        packaging_cost,
+                        markup_percent,
+                        total_cost,
+                        selling_price,
+                        deposit_amount,
+                        fulfillment_method,
+                        delivery_address,
+                        notes
+                    )
+                    OUTPUT INSERTED.order_id
+                    VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?
+                    );
+                    """,
+                    first_item["recipe_id"],
+                    order_name_snapshot,
+                    clean_customer_name,
+                    None,
+                    first_item["target_diameter"],
+                    first_item["target_height"],
+                    0,
+                    completed_datetime,
+                    "Odebrane",
+                    ingredients_cost,
+                    work_hours,
+                    hourly_rate,
+                    work_cost,
+                    utilities_cost,
+                    depreciation_cost,
+                    decorations_cost,
+                    packaging_cost,
+                    markup_percent,
+                    total_cost,
+                    selling_price,
+                    received_amount,
+                    "Odbiór osobisty",
+                    None,
+                    clean_notes or None,
+                )
+
+                order_id = cursor.fetchone()[0]
+
+                # Poszczególne przepisy wyceny
+                for position_number, calculated_item in enumerate(
+                    calculated_items,
+                    start=1,
+                ):
+                    cursor.execute(
+                        """
+                        INSERT INTO OrderRecipeItems (
+                            order_id,
+                            recipe_id,
+                            recipe_name_snapshot,
+                            target_diameter_cm,
+                            target_height_cm,
+                            multiplier,
+                            ingredients_cost,
+                            position_number
+                        )
+                        OUTPUT INSERTED.order_recipe_item_id
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                        """,
+                        order_id,
+                        calculated_item["recipe_id"],
+                        calculated_item["recipe_name"],
+                        calculated_item[
+                            "target_diameter"
+                        ],
+                        calculated_item[
+                            "target_height"
+                        ],
+                        calculated_item["multiplier"],
+                        calculated_item[
+                            "ingredients_cost"
+                        ],
+                        position_number,
+                    )
+
+                    order_recipe_item_id = (
+                        cursor.fetchone()[0]
+                    )
+
+                    # Snapshot składników konkretnej pozycji
+                    for ingredient in calculated_item["ingredients"]:
+                        scaled_quantity = ingredient["scaled_quantity"]
+
+                        if (
+                            scaled_quantity is None
+                            or float(scaled_quantity) <= 0
+                        ):
+                            continue
+                        cursor.execute(
+                            """
+                            INSERT INTO OrderIngredients (
+                                order_id,
+                                order_recipe_item_id,
+                                ingredient_id,
+                                ingredient_name_snapshot,
+                                scaled_quantity,
+                                unit,
+                                package_quantity_snapshot,
+                                package_price_snapshot,
+                                ingredient_cost
+                            )
+                            VALUES (
+                                ?, ?, ?, ?, ?, ?, ?, ?, ?
+                            );
+                            """,
+                            order_id,
+                            order_recipe_item_id,
+                            ingredient["ingredient_id"],
+                            ingredient["ingredient"],
+                            ingredient[
+                                "scaled_quantity"
+                            ],
+                            ingredient["unit"],
+                            ingredient[
+                                "package_quantity"
+                            ],
+                            ingredient["package_price"],
+                            ingredient[
+                                "ingredient_cost"
+                            ],
+                        )
+
+                connection.commit()
+
+            except Exception:
+                connection.rollback()
+                raise
+
+            finally:
+                connection.close()
+
+            message = (
+                f"Zamówienie nr {order_id} zostało "
+                "zapisane jako zrealizowane."
+            )
+
+            if clear_after_save:
+                clear_valuation_items()
+
+                st.session_state.saved_order_message = (
+                    message
+                )
+
+                st.rerun()
+            else:
+                st.success(message)
 
 # =========================================================
 # SKALOWANE SKŁADNIKI

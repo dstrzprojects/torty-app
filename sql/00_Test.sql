@@ -1,2 +1,19 @@
-SELECT * FROM dbo.Orders;
-SELECT * FROM dbo.OrderIngredients;
+USE TortyDB;
+GO
+
+SELECT
+    TABLE_NAME,
+    COLUMN_NAME,
+    DATA_TYPE,
+    IS_NULLABLE,
+    COLUMN_DEFAULT
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_NAME IN (
+    'Orders',
+    'OrderIngredients',
+    'OrderRecipeItems'
+)
+ORDER BY
+    TABLE_NAME,
+    ORDINAL_POSITION;
+GO
