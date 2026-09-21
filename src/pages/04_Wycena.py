@@ -340,33 +340,59 @@ with st.expander("Cena sprzedaży", expanded=True):
         f"{suggested_price:.2f} zł",
     )
 
-    if "valuation_selling_price" not in st.session_state:
-        st.session_state.valuation_selling_price = round(
+    if "saved_selling_price" not in st.session_state:
+        st.session_state.saved_selling_price = round(
             suggested_price,
             2,
         )
+
+
+    def remember_selling_price():
+        st.session_state.saved_selling_price = float(
+            st.session_state["_valuation_selling_price"]
+        )
+
+
+    selling_price_key = "_valuation_selling_price"
+
+    if selling_price_key not in st.session_state:
+        st.session_state[selling_price_key] = (
+            st.session_state.saved_selling_price
+        )
+
 
     if st.button(
         "Ustaw cenę wynikającą z wyceny",
         use_container_width=True,
     ):
-        st.session_state.valuation_selling_price = round(
+        suggested_price_value = round(
             suggested_price,
             2,
         )
-        st.rerun()
+
+        st.session_state.saved_selling_price = (
+            suggested_price_value
+        )
+
+        st.session_state[selling_price_key] = (
+            suggested_price_value
+        )
+
 
     selling_price = st.number_input(
         "Rzeczywista cena sprzedaży [zł]",
         min_value=0.0,
         step=10.0,
         format="%.2f",
-        key="valuation_selling_price",
+        key=selling_price_key,
+        on_change=remember_selling_price,
         help=(
             "Możesz wpisać cenę uzgodnioną z klientem. "
             "Nie musi być równa wycenie."
         ),
     )
+
+
 
     additional_profit = selling_price - total_cost
     total_earnings = work_cost + additional_profit
