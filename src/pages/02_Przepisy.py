@@ -116,7 +116,7 @@ ingredients = fetch_rows("""
     FROM Ingredients
     ORDER BY name;
 """)
-
+#recipe_id = recipe["recipe_id"]
 recipe_by_id = {
     recipe["recipe_id"]: recipe
     for recipe in recipes
@@ -141,6 +141,119 @@ def optional_positive_number(value, field_name):
 
     return number
 
+    # -----------------------------------------------------
+    # Kopiowanie przepisu
+    # -----------------------------------------------------
+    with st.popover("📋 Kopiuj przepis"):
+        with st.form(f"copy_recipe_form_{recipe_id}"):
+            copied_recipe_name = st.text_input(
+                "Nazwa kopii",
+                value=f"{recipe['name']} — kopia",
+            )
+    
+            copy_submitted = st.form_submit_button(
+                "Utwórz kopię",
+                use_container_width=True,
+            )
+    
+        if copy_submitted:
+            clean_copied_name = copied_recipe_name.strip()
+    
+            if not clean_copied_name:
+                st.error("Podaj nazwę nowego przepisu.")
+            else:
+                try:
+                    with get_connection() as connection:
+                        cursor = connection.cursor()
+    
+                        cursor.execute(
+                            """
+                            SELECT COUNT(*)
+                            FROM Recipes
+                            WHERE name = ?;
+                            """,
+                            clean_copied_name,
+                        )
+    
+                        name_taken = cursor.fetchone()[0] > 0
+    
+                        if name_taken:
+                            st.warning(
+                                "Przepis o takiej nazwie już istnieje."
+                            )
+                        else:
+                            # Kopiowanie podstawowych danych przepisu
+                            cursor.execute(
+                                """
+                                INSERT INTO Recipes (
+                                    name,
+                                    description,
+                                    base_diameter_cm,
+                                    base_height_cm
+                                )
+                                OUTPUT INSERTED.recipe_id
+                                SELECT
+                                    ?,
+                                    description,
+                                    base_diameter_cm,
+                                    base_height_cm
+                                FROM Recipes
+                                WHERE recipe_id = ?;
+                                """,
+                                clean_copied_name,
+                                recipe_id,
+                            )
+    
+                            new_recipe_id = cursor.fetchone()[0]
+    
+                            # Kopiowanie własnych składników przepisu
+                            cursor.execute(
+                                """
+                                INSERT INTO RecipeIngredients (
+                                    recipe_id,
+                                    ingredient_id,
+                                    quantity
+                                )
+                                SELECT
+                                    ?,
+                                    ingredient_id,
+                                    quantity
+                                FROM RecipeIngredients
+                                WHERE recipe_id = ?;
+                                """,
+                                new_recipe_id,
+                                recipe_id,
+                            )
+    
+                            # Kopiowanie powiązań z podprzepisami
+                            cursor.execute(
+                                """
+                                INSERT INTO RecipeComponents (
+                                    parent_recipe_id,
+                                    child_recipe_id,
+                                    quantity_factor
+                                )
+                                SELECT
+                                    ?,
+                                    child_recipe_id,
+                                    quantity_factor
+                                FROM RecipeComponents
+                                WHERE parent_recipe_id = ?;
+                                """,
+                                new_recipe_id,
+                                recipe_id,
+                            )
+    
+                            connection.commit()
+    
+                            st.success(
+                                f"Utworzono przepis „{clean_copied_name}”."
+                            )
+                            st.rerun()
+    
+                except Exception as error:
+                    st.error(f"Nie udało się skopiować przepisu: {error}")
+
 
 # =========================================================
 # ZARZĄDZANIE PRZEPISAMI
@@ -160,6 +273,7 @@ for recipe in recipes:
         [20, 1],
         vertical_alignment="top",
     )
+
 
     # -----------------------------------------------------
     # USUWANIE PRZEPISU
@@ -250,6 +364,8 @@ for recipe in recipes:
                 if st.session_state.pending_recipe_delete is None:
                     st.rerun()
 
+
+    
     # -----------------------------------------------------
     # ROZWIJANY PRZEPIS
     # -----------------------------------------------------
