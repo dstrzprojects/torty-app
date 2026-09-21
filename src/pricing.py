@@ -52,6 +52,7 @@ def calculate_scaled_ingredients(
     target_diameter,
     target_height,
     correction_percent=0,
+    scale_factor_override=None,
 ):
     recipe = fetch_one(
         """
@@ -95,11 +96,21 @@ def calculate_scaled_ingredients(
             "Korekta nie może wynosić -100% lub mniej."
         )
 
-    scale_factor = (
+    automatic_scale_factor = (
         (target_diameter / base_diameter) ** 2
         * (target_height / base_height)
         * (1 + correction_percent / 100)
     )
+    
+    if scale_factor_override is None:
+        scale_factor = automatic_scale_factor
+    else:
+        scale_factor = float(scale_factor_override)
+    
+        if scale_factor <= 0:
+            raise ValueError(
+                "Mnożnik musi być większy od zera."
+            )
 
     ingredients = fetch_rows(
         """

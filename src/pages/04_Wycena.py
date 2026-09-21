@@ -4,12 +4,14 @@ from pricing import (
     calculate_scaled_ingredients,
     get_recipes,
 )
+from valuation_cart import get_valuation_items
+
 
 st.title("Wycena")
 
 
 # =========================================================
-# POBIERANIE PRZEPISÓW
+# PRZEPISY I WSPÓLNA LISTA POZYCJI
 # =========================================================
 
 recipes = get_recipes()
@@ -23,90 +25,154 @@ recipe_by_id = {
     for recipe in recipes
 }
 
+valuation_items = get_valuation_items()
+
+if not valuation_items:
+    st.info(
+        "Lista wyceny jest pusta. Dodaj przepisy "
+        "w zakładce „Szybka wycena”."
+    )
+
+    st.page_link(
+        "pages/06_Szybka_Wycena.py",
+        label="Przejdź do szybkiej wyceny",
+        icon="🧮",
+    )
+
+    st.stop()
+
 
 # =========================================================
-# WYBÓR TORTU I SKALOWANIE
+# OBLICZANIE WSZYSTKICH POZYCJI
+# =========================================================
+
+position_rows = []
+ingredient_rows = []
+missing_price_ingredients = set()
+ingredients_cost = 0.0
+
+recipe_occurrences = {}
+
+for item_id, item in valuation_items.items():
+    recipe_id = item["recipe_id"]
+
+    if recipe_id not in recipe_by_id:
+        continue
+
+    recipe = recipe_by_id[recipe_id]
+
+    recipe_occurrences[recipe_id] = (
+        recipe_occurrences.get(recipe_id, 0) + 1
+    )
+
+    occurrence = recipe_occurrences[recipe_id]
+
+    position_name = (
+        f"{recipe['name']} ({occurrence})"
+    )
+
+    target_diameter = float(
+        item["target_diameter"]
+    )
+    target_height = float(
+        item["target_height"]
+    )
+    multiplier = float(item["multiplier"])
+
+    pricing_result = calculate_scaled_ingredients(
+        recipe_id=recipe_id,
+        target_diameter=target_diameter,
+        target_height=target_height,
+        correction_percent=0,
+        scale_factor_override=multiplier,
+    )
+
+    position_cost = float(
+        pricing_result["ingredients_cost"]
+    )
+
+    ingredients_cost += position_cost
+
+    position_rows.append(
+        {
+            "recipe": position_name,
+            "target_diameter": target_diameter,
+            "target_height": target_height,
+            "multiplier": multiplier,
+            "ingredients_cost": position_cost,
+        }
+    )
+
+    for ingredient_row in pricing_result["ingredients"]:
+        displayed_row = dict(ingredient_row)
+        displayed_row["recipe"] = position_name
+        ingredient_rows.append(displayed_row)
+
+    missing_price_ingredients.update(
+        pricing_result["missing_price_ingredients"]
+    )
+
+
+if not position_rows:
+    st.warning(
+        "Żaden z dodanych przepisów nie jest już dostępny."
+    )
+    st.stop()
+
+
+# =========================================================
+# POZYCJE WYCENY
 # =========================================================
 
 with st.expander("Wycena tortu", expanded=True):
-    selected_recipe_id = st.selectbox(
-        "Przepis",
-        options=list(recipe_by_id),
-        format_func=lambda recipe_id: (
-            recipe_by_id[recipe_id]["name"]
+    st.caption(
+        "Pozycje są wspólne z zakładką „Szybka wycena”. "
+        "Tam możesz zmieniać przepisy, wymiary i mnożniki."
+    )
+
+    st.dataframe(
+        position_rows,
+        use_container_width=True,
+        hide_index=True,
+        column_order=(
+            "recipe",
+            "target_diameter",
+            "target_height",
+            "multiplier",
+            "ingredients_cost",
         ),
-        key="valuation_recipe",
+        column_config={
+            "recipe": "Przepis",
+            "target_diameter": st.column_config.NumberColumn(
+                "Średnica",
+                format="%.1f cm",
+            ),
+            "target_height": st.column_config.NumberColumn(
+                "Wysokość",
+                format="%.1f cm",
+            ),
+            "multiplier": st.column_config.NumberColumn(
+                "Mnożnik",
+                format="× %.3f",
+            ),
+            "ingredients_cost": (
+                st.column_config.NumberColumn(
+                    "Koszt składników",
+                    format="%.2f zł",
+                )
+            ),
+        },
     )
 
-    selected_recipe = recipe_by_id[selected_recipe_id]
-
-    base_diameter = float(
-        selected_recipe["base_diameter_cm"]
-    )
-
-    base_height = float(
-        selected_recipe["base_height_cm"]
-    )
-
-    st.caption(
-        f"Wymiary bazowe przepisu: "
-        f"{base_diameter:g} × {base_height:g} cm"
-    )
-
-    target_diameter = st.number_input(
-        "Średnica tortu [cm]",
-        min_value=1.0,
-        value=base_diameter,
-        step=1.0,
-        key=f"valuation_diameter_{selected_recipe_id}",
-    )
-
-    target_height = st.number_input(
-        "Wysokość tortu [cm]",
-        min_value=1.0,
-        value=base_height,
-        step=1.0,
-        key=f"valuation_height_{selected_recipe_id}",
-    )
-
-    correction_percent = st.number_input(
-        "Korekta ilości składników [%]",
-        min_value=-50.0,
-        max_value=100.0,
-        value=0.0,
-        step=1.0,
-        key=f"valuation_correction_{selected_recipe_id}",
-    )
-
-
-# =========================================================
-# WSPÓLNE OBLICZENIE SKŁADNIKÓW
-# =========================================================
-
-pricing_result = calculate_scaled_ingredients(
-    recipe_id=selected_recipe_id,
-    target_diameter=target_diameter,
-    target_height=target_height,
-    correction_percent=correction_percent,
-)
-
-scale_factor = pricing_result["scale_factor"]
-ingredient_rows = pricing_result["ingredients"]
-ingredients_cost = pricing_result["ingredients_cost"]
-
-missing_price_ingredients = pricing_result[
-    "missing_price_ingredients"
-]
-
-with st.expander("Współczynnik skalowania", expanded=False):
     st.metric(
-        "Współczynnik",
-        f"{scale_factor:.3f}×",
+        "Łączny koszt składników",
+        f"{ingredients_cost:.2f} zł",
     )
 
-    st.caption(
-        "Współczynnik jest stosowany do ilości składników. "
-        "Koszt jest następnie liczony od przeskalowanej ilości."
+    st.page_link(
+        "pages/06_Szybka_Wycena.py",
+        label="Zmień pozycje wyceny",
+        icon="✏️",
     )
 
 
@@ -123,6 +189,7 @@ with st.expander("Pozostałe koszty", expanded=False):
             min_value=0.0,
             value=4.0,
             step=0.5,
+            key="valuation_work_hours",
         )
 
         hourly_rate = st.number_input(
@@ -130,21 +197,24 @@ with st.expander("Pozostałe koszty", expanded=False):
             min_value=0.0,
             value=30.0,
             step=5.0,
+            key="valuation_hourly_rate",
         )
 
         utilities_cost = st.number_input(
             "Media [zł]",
             min_value=0.0,
-            value=10.0,
+            value=ingredients_cost * 0.10,
             step=1.0,
+            key="valuation_utilities_cost",
         )
 
     with col2:
         depreciation_cost = st.number_input(
             "Amortyzacja sprzętu [zł]",
             min_value=0.0,
-            value=5.0,
+            value=0.5,
             step=1.0,
+            key="valuation_depreciation_cost",
         )
 
         decorations_cost = st.number_input(
@@ -152,6 +222,7 @@ with st.expander("Pozostałe koszty", expanded=False):
             min_value=0.0,
             value=0.0,
             step=1.0,
+            key="valuation_decorations_cost",
         )
 
         packaging_cost = st.number_input(
@@ -159,6 +230,7 @@ with st.expander("Pozostałe koszty", expanded=False):
             min_value=0.0,
             value=0.0,
             step=1.0,
+            key="valuation_packaging_cost",
         )
 
 
@@ -188,7 +260,9 @@ with st.expander("Cena sprzedaży", expanded=True):
         st.warning(
             "Wycena jest niepełna. Brakuje ceny lub "
             "wielkości opakowania dla: "
-            + ", ".join(missing_price_ingredients)
+            + ", ".join(
+                sorted(missing_price_ingredients)
+            )
         )
 
     markup_percent = st.number_input(
@@ -196,6 +270,7 @@ with st.expander("Cena sprzedaży", expanded=True):
         min_value=0.0,
         value=0.0,
         step=5.0,
+        key="valuation_markup_percent",
     )
 
     suggested_price = total_cost * (
@@ -207,12 +282,28 @@ with st.expander("Cena sprzedaży", expanded=True):
         f"{suggested_price:.2f} zł",
     )
 
+    if "valuation_selling_price" not in st.session_state:
+        st.session_state.valuation_selling_price = round(
+            suggested_price,
+            2,
+        )
+
+    if st.button(
+        "Ustaw cenę wynikającą z wyceny",
+        use_container_width=True,
+    ):
+        st.session_state.valuation_selling_price = round(
+            suggested_price,
+            2,
+        )
+        st.rerun()
+
     selling_price = st.number_input(
         "Rzeczywista cena sprzedaży [zł]",
         min_value=0.0,
-        value=float(round(suggested_price, 2)),
         step=10.0,
         format="%.2f",
+        key="valuation_selling_price",
         help=(
             "Możesz wpisać cenę uzgodnioną z klientem. "
             "Nie musi być równa wycenie."
@@ -257,7 +348,7 @@ with st.expander("Cena sprzedaży", expanded=True):
     if selling_price < total_cost:
         st.warning(
             "Cena sprzedaży jest niższa od pełnego "
-            "kosztu wykonania tortu."
+            "kosztu wykonania."
         )
 
 
@@ -309,23 +400,25 @@ with st.expander("Struktura kosztów", expanded=False):
 # =========================================================
 
 with st.expander("Skalowane składniki", expanded=True):
-    if not ingredient_rows:
-        st.info(
-            "Wybrany przepis nie ma jeszcze składników."
+    if missing_price_ingredients:
+        st.warning(
+            "Brakuje ceny lub wielkości opakowania dla: "
+            + ", ".join(
+                sorted(missing_price_ingredients)
+            )
         )
 
+    if not ingredient_rows:
+        st.info(
+            "Wybrane przepisy nie mają jeszcze składników."
+        )
     else:
-        if missing_price_ingredients:
-            st.warning(
-                "Brakuje ceny lub wielkości opakowania dla: "
-                + ", ".join(missing_price_ingredients)
-            )
-
         st.dataframe(
             ingredient_rows,
             use_container_width=True,
             hide_index=True,
             column_order=(
+                "recipe",
                 "ingredient",
                 "base_quantity",
                 "scaled_quantity",
@@ -333,6 +426,7 @@ with st.expander("Skalowane składniki", expanded=True):
                 "ingredient_cost",
             ),
             column_config={
+                "recipe": "Pozycja wyceny",
                 "ingredient": "Składnik",
                 "base_quantity": "Ilość bazowa",
                 "scaled_quantity": "Ilość",

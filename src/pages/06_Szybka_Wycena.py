@@ -1,5 +1,12 @@
 import streamlit as st
-import uuid
+from valuation_cart import (
+    add_recipe_item,
+    get_valuation_items,
+    remove_recipe_item,
+    update_item_dimensions,
+    update_item_multiplier,
+)
+
 
 from pricing import (
     calculate_scaled_ingredients,
@@ -40,44 +47,44 @@ def remember_recipe_multiplier(recipe_id):
     )
 
 
-if "quick_valuation_items" not in st.session_state:
-    st.session_state.quick_valuation_items = {}
+valuation_items = get_valuation_items()
 
 
 def update_quick_dimensions(
-    recipe_id,
+    item_id,
     base_diameter,
     base_height,
 ):
-    diameter_key = f"_quick_diameter_{recipe_id}"
-    height_key = f"_quick_height_{recipe_id}"
-    multiplier_key = f"_quick_multiplier_{recipe_id}"
+    diameter_key = f"_quick_diameter_{item_id}"
+    height_key = f"_quick_height_{item_id}"
+    multiplier_key = f"_quick_multiplier_{item_id}"
 
-    target_diameter = float(st.session_state[diameter_key])
-    target_height = float(st.session_state[height_key])
-
-    calculated_multiplier = (
-        (target_diameter / base_diameter) ** 2
-        * (target_height / base_height)
+    updated_item = update_item_dimensions(
+        item_id=item_id,
+        target_diameter=float(
+            st.session_state[diameter_key]
+        ),
+        target_height=float(
+            st.session_state[height_key]
+        ),
+        base_diameter=base_diameter,
+        base_height=base_height,
     )
 
-    st.session_state[multiplier_key] = calculated_multiplier
-
-    st.session_state.quick_valuation_items[recipe_id].update(
-        {
-            "target_diameter": target_diameter,
-            "target_height": target_height,
-            "multiplier": calculated_multiplier,
-        }
-    )
-
-
-def update_quick_multiplier(recipe_id):
-    multiplier_key = f"_quick_multiplier_{recipe_id}"
-
-    st.session_state.quick_valuation_items[recipe_id][
+    st.session_state[multiplier_key] = updated_item[
         "multiplier"
-    ] = float(st.session_state[multiplier_key])
+    ]
+
+
+def update_quick_multiplier(item_id):
+    multiplier_key = f"_quick_multiplier_{item_id}"
+
+    update_item_multiplier(
+        item_id=item_id,
+        multiplier=float(
+            st.session_state[multiplier_key]
+        ),
+    )
 
 
 recipe_by_id = {
@@ -88,7 +95,7 @@ recipe_by_id = {
 available_recipe_ids = [
     recipe_id
     for recipe_id in recipe_by_id
-    if recipe_id not in st.session_state.quick_valuation_items
+    if recipe_id not in valuation_items
 ]
 
 # =========================================================
@@ -96,7 +103,7 @@ available_recipe_ids = [
 # =========================================================
 
 if "quick_valuation_items" not in st.session_state:
-    st.session_state.quick_valuation_items = {}
+    valuation_items = {}
 
 
 def update_quick_dimensions(
@@ -118,7 +125,7 @@ def update_quick_dimensions(
 
     st.session_state[multiplier_key] = multiplier
 
-    st.session_state.quick_valuation_items[item_id].update(
+    valuation_items[item_id].update(
         {
             "target_diameter": target_diameter,
             "target_height": target_height,
@@ -130,7 +137,7 @@ def update_quick_dimensions(
 def update_quick_multiplier(item_id):
     multiplier_key = f"_quick_multiplier_{item_id}"
 
-    st.session_state.quick_valuation_items[item_id][
+    valuation_items[item_id][
         "multiplier"
     ] = float(st.session_state[multiplier_key])
 
@@ -170,18 +177,11 @@ with add_col2:
 if add_recipe:
     recipe = recipe_by_id[recipe_to_add]
 
-    item_id = uuid.uuid4().hex
-
-    st.session_state.quick_valuation_items[item_id] = {
-        "recipe_id": recipe_to_add,
-        "target_diameter": float(
-            recipe["base_diameter_cm"]
-        ),
-        "target_height": float(
-            recipe["base_height_cm"]
-        ),
-        "multiplier": 1.0,
-    }
+    add_recipe_item(
+        recipe_id=recipe_to_add,
+        base_diameter=float(recipe["base_diameter_cm"]),
+        base_height=float(recipe["base_height_cm"]),
+    )
 
     st.rerun()
 
@@ -191,18 +191,18 @@ st.subheader("Wybrane przepisy")
 selected_recipes = []
 recipe_occurrences = {}
 
-if not st.session_state.quick_valuation_items:
+if not valuation_items:
     st.info("Dodaj przepis z listy powyżej.")
 
 
 for item_id in list(
-    st.session_state.quick_valuation_items
+    valuation_items
 ):
-    item = st.session_state.quick_valuation_items[item_id]
+    item = valuation_items[item_id]
     recipe_id = item["recipe_id"]
 
     if recipe_id not in recipe_by_id:
-        del st.session_state.quick_valuation_items[item_id]
+        remove_recipe_item(item_id)
         continue
 
     recipe = recipe_by_id[recipe_id]
@@ -250,7 +250,7 @@ for item_id in list(
             help="Usuń tę pozycję z wyceny",
             use_container_width=True,
         ):
-            del st.session_state.quick_valuation_items[
+            del valuation_items[
                 item_id
             ]
 
