@@ -380,7 +380,7 @@ with st.expander("Cena sprzedaży", expanded=True):
     )
 
     summary_col2.metric(
-        "Koszty poza pracą",
+        "Koszt bez robocizny",
         f"{cost_without_work:.2f} zł",
     )
 
