@@ -40,15 +40,39 @@ def fetch_ingredients():
         ]
 
 
-def optional_positive_number(value, field_name):
+def optional_positive_number(
+    value,
+    field_name,
+    ingredient_name,
+):
     if value is None or pd.isna(value):
         return None
 
-    number = float(value)
+    try:
+        cleaned_value = (
+            str(value)
+            .replace("zł", "")
+            .replace(",", ".")
+            .strip()
+        )
+
+        if not cleaned_value:
+            return None
+
+        number = float(cleaned_value)
+
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Składnik „{ingredient_name}”: "
+            f"pole „{field_name}” nie jest liczbą. "
+            f"Otrzymana wartość: {value!r}."
+        )
 
     if number <= 0:
         raise ValueError(
-            f"Pole „{field_name}” musi być dodatnie."
+            f"Składnik „{ingredient_name}”: "
+            f"pole „{field_name}” musi być dodatnie. "
+            f"Otrzymana wartość: {number}."
         )
 
     return number
@@ -102,9 +126,13 @@ edited_dataframe = st.data_editor(
     ),
     column_config={
         "ingredient_id": st.column_config.NumberColumn(
-            "ID",
+            "LP",
             disabled=True,
             width="small",
+            help=(
+                "Numer jest nadawany automatycznie "
+                "przez bazę po zapisaniu."
+            ),
         ),
         "name": st.column_config.TextColumn(
             "Nazwa",
@@ -129,7 +157,7 @@ edited_dataframe = st.data_editor(
             st.column_config.NumberColumn(
                 "Cena opakowania",
                 min_value=0.01,
-                step=0.10,
+                step=0.01,
                 format="%.2f zł",
                 help="Może pozostać pusta.",
             )
@@ -196,16 +224,16 @@ if st.button(
                     f"„{name}”."
                 )
 
-            package_quantity = (
-                optional_positive_number(
-                    row.get("package_quantity"),
-                    "Ilość w opakowaniu",
-                )
+            package_quantity = optional_positive_number(
+                row.get("package_quantity"),
+                "Ilość w opakowaniu",
+                name,
             )
-
+            
             package_price = optional_positive_number(
                 row.get("package_price"),
                 "Cena opakowania",
+                name,
             )
 
             validated_rows.append(
@@ -320,6 +348,7 @@ if st.button(
                             unit,
                             package_price
                         )
+                        OUTPUT INSERTED.ingredient_id
                         VALUES (?, ?, ?, ?);
                         """,
                         row["name"],
@@ -327,7 +356,7 @@ if st.button(
                         row["unit"],
                         row["package_price"],
                     )
-
+                    new_ingredient_id = cursor.fetchone()[0]
                 else:
                     cursor.execute(
                         """
