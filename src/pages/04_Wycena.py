@@ -175,6 +175,52 @@ with st.expander("Wycena tortu", expanded=True):
         icon="✏️",
     )
 
+OTHER_COST_DEFAULTS = {
+    "work_hours": 8.0,
+    "hourly_rate": 50.0,
+    "utilities_cost": 0.1*ingredients_cost,
+    "depreciation_cost": 0.5,
+    "decorations_cost": 0.0,
+    "packaging_cost": 15.0,
+}
+
+if "valuation_other_costs" not in st.session_state:
+    st.session_state.valuation_other_costs = (
+        OTHER_COST_DEFAULTS.copy()
+    )
+
+
+def remember_other_cost(field_name):
+    widget_key = f"_valuation_{field_name}"
+
+    st.session_state.valuation_other_costs[
+        field_name
+    ] = float(st.session_state[widget_key])
+
+
+def other_cost_input(
+    label,
+    field_name,
+    step,
+):
+    widget_key = f"_valuation_{field_name}"
+
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = (
+            st.session_state.valuation_other_costs.get(
+                field_name,
+                OTHER_COST_DEFAULTS[field_name],
+            )
+        )
+
+    return st.number_input(
+        label,
+        min_value=0.0,
+        step=step,
+        key=widget_key,
+        on_change=remember_other_cost,
+        args=(field_name,),
+    )
 
 # =========================================================
 # POZOSTAŁE KOSZTY
@@ -184,55 +230,42 @@ with st.expander("Pozostałe koszty", expanded=False):
     col1, col2 = st.columns(2)
 
     with col1:
-        work_hours = st.number_input(
+        work_hours = other_cost_input(
             "Czas pracy [godz.]",
-            min_value=0.0,
-            value=4.0,
-            step=0.5,
-            key="valuation_work_hours",
+            "work_hours",
+            0.5,
         )
 
-        hourly_rate = st.number_input(
+        hourly_rate = other_cost_input(
             "Stawka godzinowa [zł]",
-            min_value=0.0,
-            value=50.0,
-            step=5.0,
-            key="valuation_hourly_rate",
+            "hourly_rate",
+            5.0,
         )
 
-        utilities_cost = st.number_input(
+        utilities_cost = other_cost_input(
             "Media [zł]",
-            min_value=0.0,
-            value=ingredients_cost * 0.10,
-            step=1.0,
-            key="valuation_utilities_cost",
+            "utilities_cost",
+            1.0,
         )
 
     with col2:
-        depreciation_cost = st.number_input(
+        depreciation_cost = other_cost_input(
             "Amortyzacja sprzętu [zł]",
-            min_value=0.0,
-            value=0.5,
-            step=1.0,
-            key="valuation_depreciation_cost",
+            "depreciation_cost",
+            1.0,
         )
 
-        decorations_cost = st.number_input(
+        decorations_cost = other_cost_input(
             "Dekoracje i dodatki [zł]",
-            min_value=0.0,
-            value=0.0,
-            step=1.0,
-            key="valuation_decorations_cost",
+            "decorations_cost",
+            1.0,
         )
 
-        packaging_cost = st.number_input(
+        packaging_cost = other_cost_input(
             "Opakowanie [zł]",
-            min_value=0.0,
-            value=0.0,
-            step=1.0,
-            key="valuation_packaging_cost",
+            "packaging_cost",
+            1.0,
         )
-
 
 # =========================================================
 # OBLICZENIA KOŃCOWE
@@ -314,7 +347,7 @@ with st.expander("Cena sprzedaży", expanded=True):
     total_earnings = work_cost + additional_profit
 
     summary_col1, summary_col2 = st.columns(2)
-    summary_col3, summary_col4 = st.columns(2)
+    
 
     summary_col1.metric(
         "Koszt składników",
@@ -326,12 +359,9 @@ with st.expander("Cena sprzedaży", expanded=True):
         f"{cost_without_work:.2f} zł",
     )
 
-    summary_col3.metric(
-        "Wynagrodzenie za pracę",
-        f"{work_cost:.2f} zł",
-    )
 
-    summary_col4.metric(
+
+    st.metric(
         "Cena sprzedaży",
         f"{selling_price:.2f} zł",
         delta=(
@@ -345,54 +375,17 @@ with st.expander("Cena sprzedaży", expanded=True):
         f"{total_earnings:.2f} zł",
     )
 
+    st.metric(
+        "Zarobek na godzinę brutto bez kosztów (PLN/h)",
+        f"{total_earnings/work_hours:.2f} zł",
+    )
+
     if selling_price < total_cost:
         st.warning(
             "Cena sprzedaży jest niższa od pełnego "
             "kosztu wykonania."
         )
 
-
-# =========================================================
-# STRUKTURA KOSZTÓW
-# =========================================================
-
-with st.expander("Struktura kosztów", expanded=False):
-    st.dataframe(
-        [
-            {
-                "Pozycja": "Składniki",
-                "Koszt": ingredients_cost,
-            },
-            {
-                "Pozycja": "Robocizna",
-                "Koszt": work_cost,
-            },
-            {
-                "Pozycja": "Media",
-                "Koszt": utilities_cost,
-            },
-            {
-                "Pozycja": "Amortyzacja",
-                "Koszt": depreciation_cost,
-            },
-            {
-                "Pozycja": "Dekoracje i dodatki",
-                "Koszt": decorations_cost,
-            },
-            {
-                "Pozycja": "Opakowanie",
-                "Koszt": packaging_cost,
-            },
-        ],
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Koszt": st.column_config.NumberColumn(
-                "Koszt",
-                format="%.2f zł",
-            ),
-        },
-    )
 
 
 # =========================================================
