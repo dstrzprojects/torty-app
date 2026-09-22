@@ -24,31 +24,14 @@ if not recipes:
     st.stop()
 
 
-if "quick_selected_recipes" not in st.session_state:
-    st.session_state.quick_selected_recipes = {}
-
-if "quick_recipe_multipliers" not in st.session_state:
-    st.session_state.quick_recipe_multipliers = {}
-
-
-def remember_recipe_selection(recipe_id):
-    widget_key = f"_quick_recipe_{recipe_id}"
-
-    st.session_state.quick_selected_recipes[recipe_id] = (
-        st.session_state[widget_key]
-    )
-
-
-def remember_recipe_multiplier(recipe_id):
-    widget_key = f"_quick_multiplier_{recipe_id}"
-
-    st.session_state.quick_recipe_multipliers[recipe_id] = (
-        st.session_state[widget_key]
-    )
 
 
 valuation_items = get_valuation_items()
 
+recipe_by_id = {
+    recipe["recipe_id"]: recipe
+    for recipe in recipes
+}
 
 def update_quick_dimensions(
     item_id,
@@ -87,65 +70,17 @@ def update_quick_multiplier(item_id):
     )
 
 
-recipe_by_id = {
-    recipe["recipe_id"]: recipe
-    for recipe in recipes
-}
-
-available_recipe_ids = [
-    recipe_id
-    for recipe_id in recipe_by_id
-    if recipe_id not in valuation_items
-]
 
 # =========================================================
 # Dodawanie przepisów do wyceny
 # =========================================================
 
-if "quick_valuation_items" not in st.session_state:
-    valuation_items = {}
 
 
-def update_quick_dimensions(
-    item_id,
-    base_diameter,
-    base_height,
-):
-    diameter_key = f"_quick_diameter_{item_id}"
-    height_key = f"_quick_height_{item_id}"
-    multiplier_key = f"_quick_multiplier_{item_id}"
-
-    target_diameter = float(st.session_state[diameter_key])
-    target_height = float(st.session_state[height_key])
-
-    multiplier = (
-        (target_diameter / base_diameter) ** 2
-        * (target_height / base_height)
-    )
-
-    st.session_state[multiplier_key] = multiplier
-
-    valuation_items[item_id].update(
-        {
-            "target_diameter": target_diameter,
-            "target_height": target_height,
-            "multiplier": multiplier,
-        }
-    )
 
 
-def update_quick_multiplier(item_id):
-    multiplier_key = f"_quick_multiplier_{item_id}"
-
-    valuation_items[item_id][
-        "multiplier"
-    ] = float(st.session_state[multiplier_key])
 
 
-recipe_by_id = {
-    recipe["recipe_id"]: recipe
-    for recipe in recipes
-}
 
 
 st.subheader("Dodaj przepis do wyceny")
@@ -250,9 +185,7 @@ for item_id in list(
             help="Usuń tę pozycję z wyceny",
             use_container_width=True,
         ):
-            del valuation_items[
-                item_id
-            ]
+            remove_recipe_item(item_id)
 
             for widget_key in (
                 diameter_key,
@@ -340,7 +273,14 @@ for selected_item in selected_recipes:
     multiplier = float(
         selected_item["multiplier"]
     )
-    result = calculate_scaled_ingredients(
+    target_diameter = float(
+        selected_item["target_diameter"]
+    )
+    target_height = float(
+        selected_item["target_height"]
+    )
+
+    base_result = calculate_scaled_ingredients(
         recipe_id=recipe["recipe_id"],
         target_diameter=float(
             recipe["base_diameter_cm"]
@@ -350,13 +290,21 @@ for selected_item in selected_recipes:
         ),
         correction_percent=0,
     )
-
-    base_recipe_cost = float(
-        result["ingredients_cost"]
+    
+    result = calculate_scaled_ingredients(
+        recipe_id=recipe["recipe_id"],
+        target_diameter=target_diameter,
+        target_height=target_height,
+        correction_percent=0,
+        scale_factor_override=multiplier,
     )
-
-    recipe_cost = (
-        base_recipe_cost * multiplier
+    
+    base_recipe_cost = float(
+        base_result["ingredients_cost"]
+    )
+    
+    recipe_cost = float(
+        result["ingredients_cost"]
     )
 
     missing_prices = result[
@@ -369,12 +317,8 @@ for selected_item in selected_recipes:
         {
             "recipe": recipe["name"],
             "multiplier": multiplier,
-            "diameter": float(
-                recipe["base_diameter_cm"]
-            ),
-            "height": float(
-                recipe["base_height_cm"]
-            ),
+            "diameter": target_diameter,
+            "height": target_height,
             "base_cost": base_recipe_cost,
             "ingredients_cost": recipe_cost,
             "valuation_status": (
